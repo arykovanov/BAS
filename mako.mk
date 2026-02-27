@@ -17,6 +17,7 @@ CC = $(CROSS_COMPILE)gcc
 endif
 
 #Required
+all: mako
 ifeq (,$(wildcard ../BAS-Resources/build/mako.sh))
 $(error ../BAS-Resources not found. Repository https://github.com/RealTimeLogic/BAS-Resources required!)
 endif
@@ -55,12 +56,6 @@ endif
 CFLAGS += -DUSE_LUAINTF=1
 CFLAGS += -DUSE_DBGMON=1
 
-ifeq ($(USE_OPCUA),1)
-CFLAGS += -DUSE_OPCUA=1
-else
-CFLAGS += -DUSE_OPCUA=0
-endif
-
 CFLAGS += -Iinc -Iinc/arch/Posix
 ifdef EPOLL
 SODISP = epoll
@@ -72,11 +67,42 @@ endif
 
 VPATH = src:src/arch/Posix:src/arch/NET/$(SODISP):src/DiskIo/posix:examples/MakoServer/src
 
-# Implicit rules for making .o files from .c files
-%.o : %.c
-	$(CC) $(CFLAGS) -c -o $@ $<
-
 SOURCE = BAS.c ThreadLib.c SoDisp.c BaFile.c MakoMain.c
+
+ifdef OPCUA_ROOT
+
+src/opcua_module.c: $(OPCUA_ROOT)/opcua_module.c
+	cp -f $(OPCUA_ROOT)/opcua_module.c src/opcua_module.c
+
+src/opcua_get_node.c: $(OPCUA_ROOT)/opcua_get_node.c
+	cp -f $(OPCUA_ROOT)/opcua_get_node.c src/opcua_get_node.c
+
+src/opcua_ns0.c: $(OPCUA_ROOT)/opcua_ns0.c
+	cp -f $(OPCUA_ROOT)/opcua_ns0.c src/opcua_ns0.c
+
+
+.PHONY += opcua
+opcua: src/opcua_ns0.c src/opcua_get_node.c src/opcua_module.c
+	@echo "Use OPCUA from $(OPCUA_ROOT)"
+
+USE_OPCUA=2
+SOURCE += opcua_module.c opcua_get_node.c opcua_ns0.c
+CFLAGS += -I${OPCUA_ROOT} -DUSE_OPCUA=2
+else
+
+ifeq ($(USE_OPCUA),1)
+CFLAGS += -DUSE_OPCUA=1
+
+opcua:
+	@echo "Use embedded OPCUA"
+
+else
+CFLAGS += -DUSE_OPCUA=0
+
+opcua:
+	@echo "Excluded OPCUA"
+endif
+endif
 
 #Do we have SQLite?
 ifneq (,$(wildcard src/sqlite3.c))
@@ -138,7 +164,11 @@ endif
 
 OBJS = $(SOURCE:%.c=%.o)
 
-mako: $(ENCRYPTION_KEY_HEADER) $(OBJS) mako.zip
+# Implicit rules for making .o files from .c files
+%.o : %.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+mako: opcua $(ENCRYPTION_KEY_HEADER) $(OBJS) mako.zip
 	$(CC) -o mako $(HEXEFLAGS) $(OBJS) $(XLIB)
 
 # Must be in the same directory as the mako executable
@@ -151,6 +181,7 @@ MyCustomBindings_wrap.c : MyCustomBindings.i
 
 clean:
 	rm -f mako *.o
+	rm -f src/*opcua*.c
 
 $(ENCRYPTION_KEY_HEADER):
 ifneq ($(PYTHON),)

@@ -1,12 +1,12 @@
 /*
- *     ____             _________                __                _     
+ *     ____             _________                __                _
  *    / __ \___  ____ _/ /_  __(_)___ ___  ___  / /   ____  ____ _(_)____
  *   / /_/ / _ \/ __ `/ / / / / / __ `__ \/ _ \/ /   / __ \/ __ `/ / ___/
- *  / _, _/  __/ /_/ / / / / / / / / / / /  __/ /___/ /_/ / /_/ / / /__  
- * /_/ |_|\___/\__,_/_/ /_/ /_/_/ /_/ /_/\___/_____/\____/\__, /_/\___/  
- *                                                       /____/          
+ *  / _, _/  __/ /_/ / / / / / / / / / / /  __/ /___/ /_/ / /_/ / / /__
+ * /_/ |_|\___/\__,_/_/ /_/ /_/_/ /_/ /_/\___/_____/\____/\__, /_/\___/
+ *                                                       /____/
  *
- *                  Barracuda Embedded Web-Server 
+ *                  Barracuda Embedded Web-Server
  ****************************************************************************
  *
  *   $Id: xedge.c 5711 2025-12-14 23:15:19Z wini $
@@ -23,7 +23,7 @@
 
  The Xedge C code demonstrates the typical startup procedures required
  for the Barracuda App Server when deployed in an RTOS/firmware
- environment. 
+ environment.
 
  Xedge Documentation:
    How to use the default IDE:
@@ -70,7 +70,6 @@
 #include <BaDiskIo.h>
 #endif
 
-
 /* A secret key used by the Xedge Lua code
    See EncryptionKey.h.
  */
@@ -98,7 +97,6 @@
  */
 void barracuda(void);
 
-
 /* The server's socket dispatcher object.
  */
 static SoDisp dispatcher;
@@ -108,23 +106,20 @@ static SoDisp dispatcher;
 */
 LThreadMgr ltMgr;
 
-
 /* External code can call this function for graceful shutdown
  */
-static BaBool shutDown=FALSE;
-void setDispExit(void)
-{
-   shutDown=TRUE;
-   SoDisp_setExit(&dispatcher);
+static BaBool shutDown = FALSE;
+void setDispExit(void) {
+  shutDown = TRUE;
+  SoDisp_setExit(&dispatcher);
 }
 
-
-/* 
+/*
    Makefile option: io=ezip
 */
 #if !defined(BAIO_DISK) && !defined(BAIO_ZIP)
 /* Default is: BAIO_EZIP */
-extern ZipReader* getLspZipReader(void);
+extern ZipReader *getLspZipReader(void);
 #endif
 
 #if USE_LPEG
@@ -137,7 +132,7 @@ extern int luaopen_lpeg(lua_State *L);
 /* Google's protobuf for Lua
    https://github.com/starwing/lua-protobuf
 */
-extern int luaopen_pb(lua_State* L);
+extern int luaopen_pb(lua_State *L);
 #endif
 #if USE_CBOR
 /*  The Concise Binary Object Represenation Lua Modules
@@ -149,23 +144,19 @@ int luaopen_org_conman_cbor_c(lua_State *L);
 #error CBOR requires LPeg
 #endif
 #endif
-#if USE_OPCUA
+#if USE_OPCUA > 0
 #include <opcua_module.h>
 #endif
 
-
 #ifdef NDEBUG
-#define xpcall(L,nargs) lua_pcall(L,nargs,0,0)
+#define xpcall(L, nargs) lua_pcall(L, nargs, 0, 0)
 #else
-static void
-xpcall(lua_State *L, int nargs)
-{
-   if(lua_pcall(L, nargs, 1, 0))
-   {
-      HttpTrace_printf(0,"Error in 'startServer': %s\n",
-                       lua_isstring(L,-1) ? lua_tostring(L, -1) : "?");
-   }
-   lua_pop(L,1);
+static void xpcall(lua_State *L, int nargs) {
+  if (lua_pcall(L, nargs, 1, 0)) {
+    HttpTrace_printf(0, "Error in 'startServer': %s\n",
+                     lua_isstring(L, -1) ? lua_tostring(L, -1) : "?");
+  }
+  lua_pop(L, 1);
 }
 #endif
 
@@ -175,19 +166,16 @@ xpcall(lua_State *L, int nargs)
    require graceful termination such as sending a socket close message
    to peers.
  */
-static void
-onunload(lua_State* L, int onunloadRef)
-{
-   /* Run the 'onunload' function in the .config Lua script, which in
-    * turn runs the optional onunload for all loaded apps.
-    */
-   lua_rawgeti(L, LUA_REGISTRYINDEX, onunloadRef);
-   baAssert(lua_isfunction(L, -1));
-   xpcall(L,0);
-   luaL_unref(L, LUA_REGISTRYINDEX, onunloadRef);
-   balua_relsocket(L); /* Gracefully close all cosockets, if any */
+static void onunload(lua_State *L, int onunloadRef) {
+  /* Run the 'onunload' function in the .config Lua script, which in
+   * turn runs the optional onunload for all loaded apps.
+   */
+  lua_rawgeti(L, LUA_REGISTRYINDEX, onunloadRef);
+  baAssert(lua_isfunction(L, -1));
+  xpcall(L, 0);
+  luaL_unref(L, LUA_REGISTRYINDEX, onunloadRef);
+  balua_relsocket(L); /* Gracefully close all cosockets, if any */
 }
-
 
 /* RTOS devices typically require special file system initialization.
  * This variable can be set to a function by platform specific startup
@@ -198,40 +186,37 @@ onunload(lua_State* L, int onunloadRef)
 /* File system init code for HLOS */
 #if (defined _WIN32 || defined(BA_POSIX)) && !defined(NO_INIT_DISK_IO)
 #include <stdlib.h>
-int xedgeInitDiskIo(DiskIo* dio)
-{
-   static const char appmgr[] = {"xedge"};
-   int retVal;
-   char* buf;
-   IoStat st;
-   IoIntf* io = (IoIntf*)dio;
-   const char* home = getenv("HOME");
-   if( ! home )
-      home = getenv("USERPROFILE");
-   if( ! home )
-   {
-      HttpTrace_printf(0, "'HOME' environment variable not set\n");
-      return -1;
-   }
-   DiskIo_setRootDir(dio,home);
-   if(io->statFp(io,appmgr,&st) && io->mkDirFp(io,appmgr,0))
-   {
-      HttpTrace_printf(0, "Cannot create %s/%s\n",home,appmgr);
-      return -1;
-   }
-   buf=baMalloc(strlen(home)+sizeof(appmgr)+1);
-   if(!buf) return -1;
-   basprintf(buf,"%s/%s",home,appmgr);
-   HttpTrace_printf(0, "Xedge root directory: %s\n", buf);
-   retVal=DiskIo_setRootDir(dio,buf);
-   baFree(buf);
-   return retVal;
+int xedgeInitDiskIo(DiskIo *dio) {
+  static const char appmgr[] = {"xedge"};
+  int retVal;
+  char *buf;
+  IoStat st;
+  IoIntf *io = (IoIntf *)dio;
+  const char *home = getenv("HOME");
+  if (!home)
+    home = getenv("USERPROFILE");
+  if (!home) {
+    HttpTrace_printf(0, "'HOME' environment variable not set\n");
+    return -1;
+  }
+  DiskIo_setRootDir(dio, home);
+  if (io->statFp(io, appmgr, &st) && io->mkDirFp(io, appmgr, 0)) {
+    HttpTrace_printf(0, "Cannot create %s/%s\n", home, appmgr);
+    return -1;
+  }
+  buf = baMalloc(strlen(home) + sizeof(appmgr) + 1);
+  if (!buf)
+    return -1;
+  basprintf(buf, "%s/%s", home, appmgr);
+  HttpTrace_printf(0, "Xedge root directory: %s\n", buf);
+  retVal = DiskIo_setRootDir(dio, buf);
+  baFree(buf);
+  return retVal;
 }
 #endif
 /* End file system init code */
 
 #endif /* NO_BAIO_DISK */
-
 
 /* SharkTrustX
 
@@ -255,70 +240,62 @@ int xedgeInitDiskIo(DiskIo* dio)
 #include "tokengen.c"
 #endif
 
-
 /* Initialize the HttpServer object by calling HttpServer_constructor.
    The HttpServerConfig object is only needed during initialization.
 */
-static void
-createServer(HttpServer* server)
-{
-   HttpServerConfig scfg;
-   /* When MAXTHREADS is defined, the HttpCmdThreadPool (HTTP thread
-    * pool) is not utilized. Instead, the LThreadMgr is used as the
-    * thread pool. Additionally, the LThreadMgr is configured to prohibit
-    * the creation of additional threads.
-    * Details:
-    *  https://realtimelogic.com/ba/doc/en/C/reference/html/group__ThreadMgr.html
-    */
+static void createServer(HttpServer *server) {
+  HttpServerConfig scfg;
+  /* When MAXTHREADS is defined, the HttpCmdThreadPool (HTTP thread
+   * pool) is not utilized. Instead, the LThreadMgr is used as the
+   * thread pool. Additionally, the LThreadMgr is configured to prohibit
+   * the creation of additional threads.
+   * Details:
+   *  https://realtimelogic.com/ba/doc/en/C/reference/html/group__ThreadMgr.html
+   */
 #ifdef MAXTHREADS
-   U16 cmdInstances=MAXTHREADS;
-   if(cmdInstances > 1)
-      cmdInstances-=1;
+  U16 cmdInstances = MAXTHREADS;
+  if (cmdInstances > 1)
+    cmdInstances -= 1;
 #else
-   /* (A) Configure for 3 threads. See HttpCmdThreadPool. */
-   U16 cmdInstances=3;
+  /* (A) Configure for 3 threads. See HttpCmdThreadPool. */
+  U16 cmdInstances = 3;
 #endif
-   HttpServerConfig_constructor(&scfg);
+  HttpServerConfig_constructor(&scfg);
 
-   HttpServerConfig_setNoOfHttpCommands(&scfg,cmdInstances);
+  HttpServerConfig_setNoOfHttpCommands(&scfg, cmdInstances);
 
-   HttpServerConfig_setNoOfHttpConnections(
-      &scfg, cmdInstances+3 < 8 ? 8 : cmdInstances+3);
+  HttpServerConfig_setNoOfHttpConnections(
+      &scfg, cmdInstances + 3 < 8 ? 8 : cmdInstances + 3);
 
-   /* For huge url encoded data, if any. */
-   HttpServerConfig_setRequest(&scfg,2*1024, 8*1024);
-   /* Large response buffers makes the NetIO much faster when used by
-    * the web server.
-    */
-   HttpServerConfig_setResponseData(&scfg,8*1024);
+  /* For huge url encoded data, if any. */
+  HttpServerConfig_setRequest(&scfg, 2 * 1024, 8 * 1024);
+  /* Large response buffers makes the NetIO much faster when used by
+   * the web server.
+   */
+  HttpServerConfig_setResponseData(&scfg, 8 * 1024);
 
-   scfg.maxResponseHeader = 32 * 1024;
+  scfg.maxResponseHeader = 32 * 1024;
 
-   /* Create and init the server, by using the above HttpServerConfig.
-    */
-   HttpServer_constructor(server, &dispatcher, &scfg);
+  /* Create and init the server, by using the above HttpServerConfig.
+   */
+  HttpServer_constructor(server, &dispatcher, &scfg);
 }
-
 
 /* Lua debugger hook. Use the debug monitor or the basic trace lib.
  */
 #if USE_DBGMON
-static void
-dbgExitRequest(void* na, BaBool rstart)
-{
-   (void)na;
-   (void)rstart;
-   SoDisp_setExit(&dispatcher);
+static void dbgExitRequest(void *na, BaBool rstart) {
+  (void)na;
+  (void)rstart;
+  SoDisp_setExit(&dispatcher);
 }
 #elif defined(ENABLE_LUA_TRACE)
 /* Prints every line executed by Lua if enabled */
-static void lHook(lua_State *L, lua_Debug *ar)
-{
-   lua_getinfo(L, "S", ar);
-   printf("%4d\t%s\n",ar->currentline,ar->short_src);
+static void lHook(lua_State *L, lua_Debug *ar) {
+  lua_getinfo(L, "S", ar);
+  printf("%4d\t%s\n", ar->currentline, ar->short_src);
 }
 #endif
-
 
 /* Create and return the IO used by the Lua virtual machine.
    The IO can be configured with compile time options as follows:
@@ -333,19 +310,17 @@ static void lHook(lua_State *L, lua_Debug *ar)
 #else
 #define BAIO_DISK_PATH_STR "../XedgeResources"
 #endif
-static IoIntf*
-createVmIo()
-{
+static IoIntf *createVmIo() {
 #if defined(BAIO_DISK)
-   static DiskIo vmIo;
-   int ecode;
-   DiskIo_constructor(&vmIo);
-   if( (ecode=DiskIo_setRootDir(&vmIo, BAIO_DISK_PATH_STR)) != 0 )
-   {
-      HttpTrace_printf(0, "Cannot set DiskIo " BAIO_DISK_PATH_STR " directory: % s\n",
-                       baErr2Str(ecode));
-      baFatalE(FE_USER_ERROR_1, __LINE__);
-   }
+  static DiskIo vmIo;
+  int ecode;
+  DiskIo_constructor(&vmIo);
+  if ((ecode = DiskIo_setRootDir(&vmIo, BAIO_DISK_PATH_STR)) != 0) {
+    HttpTrace_printf(
+        0, "Cannot set DiskIo " BAIO_DISK_PATH_STR " directory: % s\n",
+        baErr2Str(ecode));
+    baFatalE(FE_USER_ERROR_1, __LINE__);
+  }
 #elif defined(BAIO_NET)
 #error Cannot use the NetIo: Not implemented.
 /* Disabled Makefile option: make io=net
@@ -357,38 +332,36 @@ createVmIo()
    Lua code works).
 */
 #else
-   static ZipIo vmIo;
-   ZipReader* zipReader;
+  static ZipIo vmIo;
+  ZipReader *zipReader;
 #if defined(BAIO_ZIP)
-   static FileZipReader fileZipReader;
-   FileZipReader_constructor(&fileZipReader, "lsp.zip");
-   zipReader = (ZipReader*)&fileZipReader;  /* cast to base class */
+  static FileZipReader fileZipReader;
+  FileZipReader_constructor(&fileZipReader, "lsp.zip");
+  zipReader = (ZipReader *)&fileZipReader; /* cast to base class */
 #else
-   /* BAIO_EZIP: for Xedge release build. */
-   zipReader = getLspZipReader();
+  /* BAIO_EZIP: for Xedge release build. */
+  zipReader = getLspZipReader();
 #ifdef USE_ZIPSIGNATURE
-   if(baCheckZipSignature(zipPubKey, zipReader->size, (CspReader*)zipReader))
-      return 0; /* ZIP signature failed */
+  if (baCheckZipSignature(zipPubKey, zipReader->size, (CspReader *)zipReader))
+    return 0; /* ZIP signature failed */
 #endif
 #endif
-   if( ! CspReader_isValid((CspReader*)zipReader) )
-      baFatalE(FE_USER_ERROR_1, __LINE__);
-   ZipIo_constructor(&vmIo, zipReader, 2048, 0);
-   if(ZipIo_getECode(&vmIo) !=  ZipErr_NoError)
-      baFatalE(FE_USER_ERROR_1, __LINE__);
+  if (!CspReader_isValid((CspReader *)zipReader))
+    baFatalE(FE_USER_ERROR_1, __LINE__);
+  ZipIo_constructor(&vmIo, zipReader, 2048, 0);
+  if (ZipIo_getECode(&vmIo) != ZipErr_NoError)
+    baFatalE(FE_USER_ERROR_1, __LINE__);
 #endif
-   return (IoIntf*)(&vmIo);
+  return (IoIntf *)(&vmIo);
 }
 
 /*
   Push the embedded primary secret key material as a Lua string
 */
 #ifndef NO_ENCRYPTIONKEY
-static void pushPrimarySecret(lua_State* L)
-{
+static void pushPrimarySecret(lua_State *L) {
 #include "XedgeWBC.h"
 }
-
 
 /* Add additional TPM secrets.
    This function simplifies calling the Lua function returned after
@@ -408,68 +381,56 @@ static void pushPrimarySecret(lua_State* L)
    used for encrypting/decrypting components of xedge.conf. this makes
    it possible to copy xedge.conf between devices.
  */
-static void
-addSecret(XedgeOpenAUX* aux, BaBool unique, const U8* secret, size_t slen)
-{
-   lua_State* L = aux->L;
-   lua_rawgeti(L, LUA_REGISTRYINDEX, aux->initXedgeFuncRef);
-   if(secret)
-   {
-      lua_pushlstring(L,(char*)secret,slen);
-   }
-   else
-   {
-      lua_pushvalue(L, -2);
-      baAssert(LUA_TSTRING == lua_type(L, -1));
-   }
-   lua_pushboolean(L,unique);
-   xpcall(L, 2);
-   if(!secret)
-   {
-      lua_pop(L,1);
-   }
+static void addSecret(XedgeOpenAUX *aux, BaBool unique, const U8 *secret,
+                      size_t slen) {
+  lua_State *L = aux->L;
+  lua_rawgeti(L, LUA_REGISTRYINDEX, aux->initXedgeFuncRef);
+  if (secret) {
+    lua_pushlstring(L, (char *)secret, slen);
+  } else {
+    lua_pushvalue(L, -2);
+    baAssert(LUA_TSTRING == lua_type(L, -1));
+  }
+  lua_pushboolean(L, unique);
+  xpcall(L, 2);
+  if (!secret) {
+    lua_pop(L, 1);
+  }
 }
 #endif /* NO_ENCRYPTIONKEY */
-
 
 /* Wrapper for calling function xedgeOpenAUX.
  * Two xedgeOpenAUX examples: led.c and AsynchLua.c.
  */
 #ifdef NO_XEDGE_AUX
-#define callXedgeOpenAUX(L,ref,io) 0
+#define callXedgeOpenAUX(L, ref, io) 0
 #else
-static void
-callXedgeOpenAUX(lua_State* L, int initXedgeFuncRef, IoIntfPtr dio)
-{
-   XedgeOpenAUX aux = {
-      L,
-      dio,
+static void callXedgeOpenAUX(lua_State *L, int initXedgeFuncRef,
+                             IoIntfPtr dio) {
+  XedgeOpenAUX aux = {L, dio,
 #ifdef NO_ENCRYPTIONKEY
-      0,0,
+                      0, 0,
 #else
-      addSecret,initXedgeFuncRef,
+                      addSecret, initXedgeFuncRef,
 #endif
-      0
-   };
+                      0};
 #ifndef NO_ENCRYPTIONKEY
-   /* ENCRYPTIONKEY from (New)EncryptionKey.h
-      Push the primary secret key material as a Lua string
-   */
-   pushPrimarySecret(L);
-   addSecret(&aux, FALSE, 0, 0);
+  /* ENCRYPTIONKEY from (New)EncryptionKey.h
+     Push the primary secret key material as a Lua string
+  */
+  pushPrimarySecret(L);
+  addSecret(&aux, FALSE, 0, 0);
 #endif
-   if(xedgeOpenAUX(&aux))
-      baFatalE(FE_USER_ERROR_1, __LINE__);
-   if(aux.xedgeCfgFile)
-   {
-      lua_rawgeti(L, LUA_REGISTRYINDEX, initXedgeFuncRef);
-      lua_pushcfunction(L, aux.xedgeCfgFile);
-      /* Register the open/save cfg file */
-      xpcall(L,1);
-   }
+  if (xedgeOpenAUX(&aux))
+    baFatalE(FE_USER_ERROR_1, __LINE__);
+  if (aux.xedgeCfgFile) {
+    lua_rawgeti(L, LUA_REGISTRYINDEX, initXedgeFuncRef);
+    lua_pushcfunction(L, aux.xedgeCfgFile);
+    /* Register the open/save cfg file */
+    xpcall(L, 1);
+  }
 }
 #endif
-
 
 /*
   This is the "main" barracuda function. This function initializes the
@@ -484,250 +445,239 @@ callXedgeOpenAUX(lua_State* L, int initXedgeFuncRef, IoIntfPtr dio)
   in the "lsp" subdirectory. The .config script is executed when we
   call balua_loadconfig from the C code below.
 */
-void
-barracuda(void)
-{
-   /* static: less stack; we only have one server instance */
-   static ThreadMutex mutex;
-   static HttpServer server;
-   static BaTimer timer;
+void barracuda(void) {
+  /* static: less stack; we only have one server instance */
+  static ThreadMutex mutex;
+  static HttpServer server;
+  static BaTimer timer;
 #ifndef MAXTHREADS
-   static HttpCmdThreadPool pool;
+  static HttpCmdThreadPool pool;
 #endif
-   static int ecode;
-   static NetIo netIo;
-   static lua_State* L; /* pointer to a Lua virtual machine */
-   static BaLua_param blp; /* configuration parameters */
-   static int onunloadRef;
-   static int initXedgeFuncRef;
+  static int ecode;
+  static NetIo netIo;
+  static lua_State *L;    /* pointer to a Lua virtual machine */
+  static BaLua_param blp; /* configuration parameters */
+  static int onunloadRef;
+  static int initXedgeFuncRef;
 #ifndef NO_BAIO_DISK
-   static DiskIo diskIo;
+  static DiskIo diskIo;
 #endif
 
-/* If restarted by Lua debugger */
-  L_restart:
+  /* If restarted by Lua debugger */
+L_restart:
 
-   HttpTrace_setPrio(9); /* block > 9 */
+  HttpTrace_setPrio(9); /* block > 9 */
 
-   /* Create the Socket dispatcher (SoDisp), the SoDisp mutex, and the server.
-    */
-   ThreadMutex_constructor(&mutex);
-   SoDisp_constructor(&dispatcher, &mutex);
-   createServer(&server);
+  /* Create the Socket dispatcher (SoDisp), the SoDisp mutex, and the server.
+   */
+  ThreadMutex_constructor(&mutex);
+  SoDisp_constructor(&dispatcher, &mutex);
+  createServer(&server);
 
-   /* For embedded systems when developing */
-   NetIo_constructor(&netIo, &dispatcher);
+  /* For embedded systems when developing */
+  NetIo_constructor(&netIo, &dispatcher);
 
-   /* The optional timer is useful in LSP code */
-   BaTimer_constructor(&timer, &mutex, BA_STACKSZ, 25, ThreadPrioNormal, 0);
-   
-   /* Create a Lua (LSP) virtual machine.
-    */
-   memset(&blp, 0, sizeof(blp));
-   blp.vmio = createVmIo();  /* The required IO */
-   if (!blp.vmio)
-      return; /* ZIP signature failed */
-   blp.server = &server;     /* pointer to a HttpServer */
-   blp.timer = &timer;       /* Pointer to a BaTimer */
+  /* The optional timer is useful in LSP code */
+  BaTimer_constructor(&timer, &mutex, BA_STACKSZ, 25, ThreadPrioNormal, 0);
+
+  /* Create a Lua (LSP) virtual machine.
+   */
+  memset(&blp, 0, sizeof(blp));
+  blp.vmio = createVmIo(); /* The required IO */
+  if (!blp.vmio)
+    return;             /* ZIP signature failed */
+  blp.server = &server; /* pointer to a HttpServer */
+  blp.timer = &timer;   /* Pointer to a BaTimer */
 #ifdef USE_ZIPBINPWD
-   /* Must be set in zipbinpwd.h */
-   blp.zipBinPwd = zipBinPwd;
-   blp.zipBinPwdLen = sizeof(zipBinPwd);
-   blp.pwdRequired = ZIPBINPWD_REQUIRED;
+  /* Must be set in zipbinpwd.h */
+  blp.zipBinPwd = zipBinPwd;
+  blp.zipBinPwdLen = sizeof(zipBinPwd);
+  blp.pwdRequired = ZIPBINPWD_REQUIRED;
 #endif
 #ifdef USE_ZIPSIGNATURE
-   /* Must be set in ZipPublicKey.h */
-   blp.zipPubKey = zipPubKey;
+  /* Must be set in ZipPublicKey.h */
+  blp.zipPubKey = zipPubKey;
 #endif
-   L = balua_create(&blp);   /* create the Lua state */
+  L = balua_create(&blp); /* create the Lua state */
 
-   /* Lua debugger hook.
-      Use the debugger monitor or the basic trace lib (lHook).
-      Must be first.
-   */
+  /* Lua debugger hook.
+     Use the debugger monitor or the basic trace lib (lHook).
+     Must be first.
+  */
 #if USE_DBGMON
-   ba_ldbgmon(L, dbgExitRequest, 0);
+  ba_ldbgmon(L, dbgExitRequest, 0);
 #elif defined(ENABLE_LUA_TRACE)
-   lua_sethook(L, lHook, LUA_MASKLINE, 0);
+  lua_sethook(L, lHook, LUA_MASKLINE, 0);
 #endif
 
-   /* Install optional IO interfaces */
-   balua_iointf(L, "net",  (IoIntf*)&netIo);
-   balua_http(L); /* Install optional HTTP client library */
-   LThreadMgr_constructor(&ltMgr,
-                          &server,
-                          ThreadPrioNormal,
-                          BA_STACKSZ,
+  /* Install optional IO interfaces */
+  balua_iointf(L, "net", (IoIntf *)&netIo);
+  balua_http(L); /* Install optional HTTP client library */
+  LThreadMgr_constructor(&ltMgr, &server, ThreadPrioNormal, BA_STACKSZ,
 #ifdef MAXTHREADS
-                          MAXTHREADS,
+                         MAXTHREADS,
 #else
-                          2, /* Number of threads */
+                         2, /* Number of threads */
 #endif
-                          L,
+                         L,
 #ifdef MAXTHREADS
-                          FALSE /* do not allow creating more threads */
+                         FALSE /* do not allow creating more threads */
 #else
-                          TRUE /* allow creating more threads */
+                         TRUE /* allow creating more threads */
 #endif
-      );
-                          
-   balua_socket(L);  /* Install optional Lua socket library */
-   balua_sharkssl(L);  /* Install optional Lua SharkSSL library */
-   balua_crypto(L);  /* Install optional crypto library */
-   balua_tracelogger(L,&ltMgr); /* Install optional trace logger library */
-   balua_luaio(L); /* xrc/lua/lio.c */
+  );
 
-/* 
+  balua_socket(L);              /* Install optional Lua socket library */
+  balua_sharkssl(L);            /* Install optional Lua SharkSSL library */
+  balua_crypto(L);              /* Install optional crypto library */
+  balua_tracelogger(L, &ltMgr); /* Install optional trace logger library */
+  balua_luaio(L);               /* xrc/lua/lio.c */
+
+/*
    Some embedded devices may not have a DiskIo port or a file system.
    The following macro makes it possible to disable the DiskIo.
    Makefile option: make ..... nodisk=1
 */
 #ifdef NO_BAIO_DISK
-   HttpTrace_printf(0, "DiskIo not included. Use NetIo!\n");
+  HttpTrace_printf(0, "DiskIo not included. Use NetIo!\n");
 #else
-   DiskIo_constructor(&diskIo);
-   /* REF-1 */
-   if( xedgeInitDiskIo(&diskIo) == 0)
-   {
-      /* Add optional IO interfaces */
-      balua_iointf(L, "disk",  (IoIntf*)&diskIo);
-   }
-   else
-   {
-      HttpTrace_printf(0, "Installing DiskIo failed!\n");
-   }
+  DiskIo_constructor(&diskIo);
+  /* REF-1 */
+  if (xedgeInitDiskIo(&diskIo) == 0) {
+    /* Add optional IO interfaces */
+    balua_iointf(L, "disk", (IoIntf *)&diskIo);
+  } else {
+    HttpTrace_printf(0, "Installing DiskIo failed!\n");
+  }
 #endif
 
-   /* Create user/login tracker */
-   balua_usertracker_create(
-      L,
-      20, /* Tracker node size. */
-      4, /* Max number of login attempts. */
-      10*60); /* 10 minutes ban time if more than 4 login attempts in a row. */
+  /* Create user/login tracker */
+  balua_usertracker_create(
+      L, 20, /* Tracker node size. */
+      4,     /* Max number of login attempts. */
+      10 *
+          60); /* 10 minutes ban time if more than 4 login attempts in a row. */
 
-   balua_tokengen(L); /* See  the "SharkTrustX" comment above */
+  balua_tokengen(L); /* See  the "SharkTrustX" comment above */
 #if USE_DLMALLOC
-   balua_mallinfo(L); /* Mem info. See dlmalloc.c */
+  balua_mallinfo(L); /* Mem info. See dlmalloc.c */
 #endif
 #if USE_UBJSON
-   balua_ubjson(L);
+  balua_ubjson(L);
 #endif
 #if USE_LPEG
-   luaL_requiref(L, "lpeg", luaopen_lpeg, FALSE);
-   lua_pop(L,1); /* Pop lpeg obj: statically loaded, not dynamically. */
+  luaL_requiref(L, "lpeg", luaopen_lpeg, FALSE);
+  lua_pop(L, 1); /* Pop lpeg obj: statically loaded, not dynamically. */
 #endif
 #if USE_CBOR
-   luaL_requiref(L, "org.conman.cbor_c", luaopen_org_conman_cbor_c, FALSE);
-   lua_pop(L,1);
+  luaL_requiref(L, "org.conman.cbor_c", luaopen_org_conman_cbor_c, FALSE);
+  lua_pop(L, 1);
 #endif
 #if USE_PROTOBUF
-   luaL_requiref(L, "pb", luaopen_pb, FALSE);
-   lua_pop(L,1); /* Pop pb obj: statically loaded, not dynamically. */
+  luaL_requiref(L, "pb", luaopen_pb, FALSE);
+  lua_pop(L, 1); /* Pop pb obj: statically loaded, not dynamically. */
 #endif
 #if USE_REVCON
-   /* Add reverse server connection. This requires SharkTrustX.
-    */
-   balua_revcon(L);
-#endif
-#if USE_OPCUA
-   luaopen_opcua_ns0_static(L);
-#endif
-   /* Dispatcher mutex must be locked until the dispatcher starts
-    */
-   ThreadMutex_set(&mutex);
-   ecode=balua_loadconfigExt(L, blp.vmio, 0, 2); /* Load and run .config  */
-   if(ecode)
-   {
-      HttpTrace_printf(0,".config error: %s.\n", lua_tostring(L,-1)); 
-      baFatalE(FE_USER_ERROR_1, __LINE__);
-   }
-   /* .config must return two functions, one for starting server, and
-    * one onunload handler
-    */
-   if(!lua_isfunction(L, -1) || !lua_isfunction(L, -2))
-   {
-      HttpTrace_printf(0,".config error: no start server or onunload\n");
-      baFatalE(FE_USER_ERROR_1, __LINE__);
-   }
-   /* Keep a reference to the two functions returned by .config */
-   onunloadRef=luaL_ref(L,LUA_REGISTRYINDEX);
-   initXedgeFuncRef=luaL_ref(L,LUA_REGISTRYINDEX);
-
-   /* See (A) above */
-#ifdef MAXTHREADS
-   LThreadMgr_enableHttpPool(&ltMgr, &server);
-#else
-   HttpCmdThreadPool_constructor(&pool, &server, ThreadPrioNormal, BA_STACKSZ);
-#endif
-
-   /* Example Lua bindings, compile with AsynchLua.c or led.c.
-      This code opens ESP32 bindings when Xedge32 is compiled.
-    */
-#ifdef NO_BAIO_DISK
-   callXedgeOpenAUX(L, initXedgeFuncRef, 0);
-#else
-   callXedgeOpenAUX(L, initXedgeFuncRef, (IoIntfPtr)&diskIo);
-#endif
-
-   /* Signal done, now start server */
-   lua_rawgeti(L, LUA_REGISTRYINDEX, initXedgeFuncRef);
-#if defined(NO_XEDGE_AUX) || defined(NO_ENCRYPTIONKEY)
-   lua_pushnil(L);
-#else
-   lua_pushboolean(L, TRUE);
-#endif
-   xpcall(L, 1);
-   luaL_unref(L, LUA_REGISTRYINDEX, initXedgeFuncRef);
-
-   /*
-     The dispatcher object waits for incoming HTTP requests. These
-     requests are sent to the HttpServer object, where they are delegated to
-     a Barracuda resource such as the WebDAV instance.
-
-     Note: the server socket connections are opened by the Lua script
-     .config and not by C code.
-
-     Arg -1: Never returns, unless SoDisp_setExit() is called
+  /* Add reverse server connection. This requires SharkTrustX.
    */
-   ThreadMutex_release(&mutex);
-   SoDisp_run(&dispatcher, -1);
+  balua_revcon(L);
+#endif
+#if USE_OPCUA > 0
+  luaopen_opcua_ns0_static(L);
+#endif
+  /* Dispatcher mutex must be locked until the dispatcher starts
+   */
+  ThreadMutex_set(&mutex);
+  ecode = balua_loadconfigExt(L, blp.vmio, 0, 2); /* Load and run .config  */
+  if (ecode) {
+    HttpTrace_printf(0, ".config error: %s.\n", lua_tostring(L, -1));
+    baFatalE(FE_USER_ERROR_1, __LINE__);
+  }
+  /* .config must return two functions, one for starting server, and
+   * one onunload handler
+   */
+  if (!lua_isfunction(L, -1) || !lua_isfunction(L, -2)) {
+    HttpTrace_printf(0, ".config error: no start server or onunload\n");
+    baFatalE(FE_USER_ERROR_1, __LINE__);
+  }
+  /* Keep a reference to the two functions returned by .config */
+  onunloadRef = luaL_ref(L, LUA_REGISTRYINDEX);
+  initXedgeFuncRef = luaL_ref(L, LUA_REGISTRYINDEX);
 
-   /* Gracefull shutdown
-    */
+  /* See (A) above */
+#ifdef MAXTHREADS
+  LThreadMgr_enableHttpPool(&ltMgr, &server);
+#else
+  HttpCmdThreadPool_constructor(&pool, &server, ThreadPrioNormal, BA_STACKSZ);
+#endif
 
-   /*Dispatcher mutex must be locked when terminating the following objects.*/
-   ThreadMutex_set(&mutex);
-   /* Graceful termination of Lua apps. See function above. */
-   onunload(L, onunloadRef);
-   LThreadMgr_destructor(&ltMgr); /* Wait for threads to exit */
+  /* Example Lua bindings, compile with AsynchLua.c or led.c.
+     This code opens ESP32 bindings when Xedge32 is compiled.
+   */
+#ifdef NO_BAIO_DISK
+  callXedgeOpenAUX(L, initXedgeFuncRef, 0);
+#else
+  callXedgeOpenAUX(L, initXedgeFuncRef, (IoIntfPtr)&diskIo);
+#endif
+
+  /* Signal done, now start server */
+  lua_rawgeti(L, LUA_REGISTRYINDEX, initXedgeFuncRef);
+#if defined(NO_XEDGE_AUX) || defined(NO_ENCRYPTIONKEY)
+  lua_pushnil(L);
+#else
+  lua_pushboolean(L, TRUE);
+#endif
+  xpcall(L, 1);
+  luaL_unref(L, LUA_REGISTRYINDEX, initXedgeFuncRef);
+
+  /*
+    The dispatcher object waits for incoming HTTP requests. These
+    requests are sent to the HttpServer object, where they are delegated to
+    a Barracuda resource such as the WebDAV instance.
+
+    Note: the server socket connections are opened by the Lua script
+    .config and not by C code.
+
+    Arg -1: Never returns, unless SoDisp_setExit() is called
+  */
+  ThreadMutex_release(&mutex);
+  SoDisp_run(&dispatcher, -1);
+
+  /* Gracefull shutdown
+   */
+
+  /*Dispatcher mutex must be locked when terminating the following objects.*/
+  ThreadMutex_set(&mutex);
+  /* Graceful termination of Lua apps. See function above. */
+  onunload(L, onunloadRef);
+  LThreadMgr_destructor(&ltMgr); /* Wait for threads to exit */
 #ifndef MAXTHREADS
-   HttpCmdThreadPool_destructor(&pool);  /* Wait for threads to exit */
+  HttpCmdThreadPool_destructor(&pool); /* Wait for threads to exit */
 #endif
 
-   /* Must cleanup all sessions before destroying the Lua VM */
-   HttpServer_termAllSessions(&server);
-   BaTimer_destructor(&timer);
-   /* Destroy all objects, including server listening objects. */
-   balua_close(L);
+  /* Must cleanup all sessions before destroying the Lua VM */
+  HttpServer_termAllSessions(&server);
+  BaTimer_destructor(&timer);
+  /* Destroy all objects, including server listening objects. */
+  balua_close(L);
 
-   IoIntf_destructor(blp.vmio); /* Virtual destr */
+  IoIntf_destructor(blp.vmio); /* Virtual destr */
 #ifndef NO_BAIO_DISK
-   DiskIo_destructor(&diskIo);
+  DiskIo_destructor(&diskIo);
 #endif
-   NetIo_destructor(&netIo);
-   HttpServer_destructor(&server);
-   SoDisp_destructor(&dispatcher);
-   ThreadMutex_release(&mutex);   
-   ThreadMutex_destructor(&mutex);
+  NetIo_destructor(&netIo);
+  HttpServer_destructor(&server);
+  SoDisp_destructor(&dispatcher);
+  ThreadMutex_release(&mutex);
+  ThreadMutex_destructor(&mutex);
 
-   if(shutDown) /* via setDispExit() */
-   {
-      shutDown=FALSE;
-   }
-   else /* via debugger */
-   {
-      HttpTrace_printf(0,"\n\nRestarting xedge.\n\n");
-      HttpTrace_flush();
-      goto L_restart;
-   }
+  if (shutDown) /* via setDispExit() */
+  {
+    shutDown = FALSE;
+  } else /* via debugger */
+  {
+    HttpTrace_printf(0, "\n\nRestarting xedge.\n\n");
+    HttpTrace_flush();
+    goto L_restart;
+  }
 }
