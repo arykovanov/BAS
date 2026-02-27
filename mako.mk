@@ -155,10 +155,33 @@ endif
 CFLAGS += $(D)MAKO_ENABLE_LUA_MODULE_INTERFACE=1
 CFLAGS += $(D)BA_ENABLE_LUA_DEBUGGER=1
 
-ifeq ($(BA_ENABLE_LUA_OPCUA),1)
-CFLAGS += $(D)BA_ENABLE_LUA_OPCUA=1
+ifdef OPCUA_ROOT
+
+src/opcua_module.c: $(OPCUA_ROOT)/opcua_module.c
+	cp -f $(OPCUA_ROOT)/opcua_module.c src/opcua_module.c
+
+src/opcua_get_node.c: $(OPCUA_ROOT)/opcua_get_node.c
+	cp -f $(OPCUA_ROOT)/opcua_get_node.c src/opcua_get_node.c
+
+src/opcua_ns0.c: $(OPCUA_ROOT)/opcua_ns0.c
+	cp -f $(OPCUA_ROOT)/opcua_ns0.c src/opcua_ns0.c
+
+
+.PHONY += opcua
+opcua: src/opcua_ns0.c src/opcua_get_node.c src/opcua_module.c
+	@echo "Use OPCUA from $(OPCUA_ROOT)"
+
+BA_ENABLE_LUA_OPCUA=2
+SOURCE += opcua_module.c opcua_get_node.c opcua_ns0.c
+CFLAGS += $(I)$(OPCUA_ROOT) $(D)BA_ENABLE_LUA_OPCUA=2
+else
+
+ifneq ($(BA_ENABLE_LUA_OPCUA),0)
+CFLAGS += $(D)BA_ENABLE_LUA_OPCUA=$(BA_ENABLE_LUA_OPCUA)
 else
 CFLAGS += $(D)BA_ENABLE_LUA_OPCUA=0
+endif
+
 endif
 
 #Do we have SQLite?
@@ -248,7 +271,7 @@ else
 	mkdir -p $(ODIR)
 endif
 
-$(TARGET): $(ENCRYPTION_KEY_HEADER) $(OBJS) mako.zip
+$(TARGET): opcua $(ENCRYPTION_KEY_HEADER) $(OBJS) mako.zip
 ifeq ($(WINDOWS),1)
 	$(CC) /nologo /Fe$@ $(OBJS) $(XLIB)
 else

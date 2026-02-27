@@ -155,7 +155,7 @@ int luaopen_org_conman_cbor_c(lua_State *L);
 #error CBOR requires LPeg
 #endif
 #endif
-#if BA_ENABLE_LUA_OPCUA
+#if BA_ENABLE_LUA_OPCUA > 0
 #include <opcua_module.h>
 #endif
 
@@ -659,7 +659,7 @@ barracuda(void)
     */
    balua_revcon(L);
 #endif
-#if BA_ENABLE_LUA_OPCUA
+#if BA_ENABLE_LUA_OPCUA > 0
    luaopen_opcua_ns0_static(L);
 #endif
 #if BA_ENABLE_MDNS && BA_ENABLE_MDNS_LUA
