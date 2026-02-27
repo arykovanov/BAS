@@ -29,6 +29,7 @@ OBJEXT = o
 endif
 
 #Required
+all: mako
 ifeq (,$(wildcard ../BAS-Resources/build))
 $(error ../BAS-Resources not found. Repository https://github.com/RealTimeLogic/BAS-Resources required!)
 endif
@@ -109,10 +110,39 @@ endif
 CFLAGS += $(D)USE_LUAINTF=1
 CFLAGS += $(D)USE_DBGMON=1
 
-ifeq ($(USE_OPCUA),1)
-CFLAGS += $(D)USE_OPCUA=1
+ifdef OPCUA_ROOT
+
+src/opcua_module.c: $(OPCUA_ROOT)/opcua_module.c
+	cp -f $(OPCUA_ROOT)/opcua_module.c src/opcua_module.c
+
+src/opcua_get_node.c: $(OPCUA_ROOT)/opcua_get_node.c
+	cp -f $(OPCUA_ROOT)/opcua_get_node.c src/opcua_get_node.c
+
+src/opcua_ns0.c: $(OPCUA_ROOT)/opcua_ns0.c
+	cp -f $(OPCUA_ROOT)/opcua_ns0.c src/opcua_ns0.c
+
+
+.PHONY += opcua
+opcua: src/opcua_ns0.c src/opcua_get_node.c src/opcua_module.c
+	@echo "Use OPCUA from $(OPCUA_ROOT)"
+
+USE_OPCUA=2
+SOURCE += opcua_module.c opcua_get_node.c opcua_ns0.c
+CFLAGS += -I${OPCUA_ROOT} -DUSE_OPCUA=2
 else
-CFLAGS += $(D)USE_OPCUA=0
+
+ifeq ($(USE_OPCUA),1)
+CFLAGS += -DUSE_OPCUA=1
+
+opcua:
+	@echo "Use embedded OPCUA"
+
+else
+CFLAGS += -DUSE_OPCUA=0
+
+opcua:
+	@echo "Excluded OPCUA"
+endif
 endif
 
 #Do we have SQLite?
@@ -182,7 +212,7 @@ endif
 
 OBJS = $(SOURCE:%.c=%.$(OBJEXT))
 
-$(TARGET): $(ENCRYPTION_KEY_HEADER) $(OBJS) mako.zip
+$(TARGET): opcua $(ENCRYPTION_KEY_HEADER) $(OBJS) mako.zip
 ifeq ($(WINDOWS),1)
 	$(CC) /nologo /Fe$@ $(OBJS) $(XLIB)
 else
