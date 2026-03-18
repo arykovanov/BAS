@@ -1,0 +1,6 @@
+*.o
+*.a
+mako*
+examples/MakoServer/src/NewEncryptionKey.h
+src/opcua*.c
+src/sqlite*
