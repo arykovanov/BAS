@@ -1,4 +1,6 @@
 *~
+*.o
+*.a
 
 # Local Mako build outputs and the generated per-build encryption key.
 /mako
@@ -6,4 +8,5 @@
 /mako.zip
 /.sharkssl-*
 /examples/MakoServer/src/NewEncryptionKey.h
-
+/src/opcua*.c
+/src/sqlite*
