@@ -86,6 +86,7 @@ ifndef XLIB
 XLIB= -lpthread -lm -ldl
 endif
 
+HEXEFLAGS += -rdynamic
 CFLAGS += -fmerge-all-constants -Wall
 
 # Add required macros and enable large-file support
