@@ -194,6 +194,7 @@ typedef struct {
 ConfigParams *cfgParams;
 
 int daemonMode = 0;
+int makoSilentStartup = 0;
 #ifdef MAKO_HOME_DIR
 static IoIntfPtr homeIo;
 #endif
@@ -993,6 +994,7 @@ static void printUsage() {
       " -u username              - Username to run as\n"
 #endif
       " script                   - Execute the script and exit\n"};
+  fprintf(stderr, "\n%s\n%s\n%s\n\n", MAKO_VNAME, MAKO_DATE, MAKO_CPR);
   fprintf(stderr, "%s", usage);
   exit(1);
 }
@@ -1000,7 +1002,7 @@ static void printUsage() {
 static IoIntf *checkMakoIo(IoIntf *io, const char *name) {
   IoStat sb;
   if (!io->statFp(io, ".config", &sb) && !io->statFp(io, ".openports", &sb)) {
-    makoprintf(FALSE, "Mounting %s\n", name);
+    if (!makoSilentStartup) makoprintf(FALSE, "Mounting %s\n", name);
     return io;
   }
   makoprintf(TRUE, "%s is missing .config or .openports\n", name);
@@ -1329,8 +1331,27 @@ L_restart:
   SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
 #endif
 #include "MakoExtM1.ch" /* Inject optional code */
-  if (!isWinService)
-    fprintf(stderr, "\n%s\n%s\n%s\n\n", MAKO_VNAME, MAKO_DATE, MAKO_CPR);
+  {
+    int j;
+    for(j=1; j<argc; j++) {
+       if(!strcmp(argv[j], "-c") || !strcmp(argv[j], "-d") || !strcmp(argv[j], "-s") || !strcmp(argv[j], "-u")) {
+           break;
+       }
+       if(!strncmp(argv[j], "-l", 2) && strchr(argv[j], ':')) {
+           break;
+       }
+       if(!strcmp(argv[j], "-e") || !strcmp(argv[j], "-i") || !strcmp(argv[j], "-v") || !strcmp(argv[j], "-E") || !strcmp(argv[j], "-W")) {
+           makoSilentStartup = 1; break;
+       }
+       if(!strncmp(argv[j], "-l", 2) && !strchr(argv[j], ':')) {
+           makoSilentStartup = 1; break;
+       }
+       if(argv[j][0] != '-') {
+           makoSilentStartup = 1; break;
+       }
+    }
+  }
+
   if (isWinService)
     daemonMode = 1;
   else {
