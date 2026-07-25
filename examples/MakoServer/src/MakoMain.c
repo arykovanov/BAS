@@ -166,7 +166,9 @@ int luaopen_org_conman_cbor_c(lua_State *L);
 #endif
 #endif
 
-#if USE_OPCUA > 0
+#if USE_OPCUA == 2
+#include <opcua_packed.h>
+#elif USE_OPCUA == 1
 #include <opcua_module.h>
 #endif
 
@@ -1546,7 +1548,9 @@ L_restart:
   balua_revcon(L);
 #endif
 
-#if USE_OPCUA > 0
+#if USE_OPCUA == 2
+  luaopen_opcua_packed_static(L);
+#elif USE_OPCUA == 1
   luaopen_opcua_ns0_static(L);
 #endif
 
