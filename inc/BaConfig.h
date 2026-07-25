@@ -702,7 +702,9 @@
 #endif
 
 /** \def BA_ENABLE_LUA_OPCUA
- * Include OPC UA native sources in the BAS auxiliary group.
+ * Select OPC UA native support: 0 disables it, 1 uses the BAS auxiliary
+ * sources, and 2 links external sources selected by the build. Mako's makefile
+ * copies those sources from OPCUA_ROOT using OPCUA_PROFILE (full or min).
  *
  * Applies to: BAS source selection and Mako/Xedge registration; not the native
  * BWS wrapper.
@@ -712,8 +714,9 @@
 #ifndef BA_ENABLE_LUA_OPCUA
 #define BA_ENABLE_LUA_OPCUA 0
 #endif
-#if (BA_ENABLE_LUA_OPCUA != 0) && (BA_ENABLE_LUA_OPCUA != 1)
-#error BA_ENABLE_LUA_OPCUA must be 0 or 1
+#if (BA_ENABLE_LUA_OPCUA != 0) && (BA_ENABLE_LUA_OPCUA != 1) && \
+    (BA_ENABLE_LUA_OPCUA != 2)
+#error BA_ENABLE_LUA_OPCUA must be 0, 1, or 2
 #endif
 
 /** \def BA_ENABLE_LUA_PROTOBUF

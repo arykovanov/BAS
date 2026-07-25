@@ -175,7 +175,9 @@ int luaopen_org_conman_cbor_c(lua_State *L);
 #endif
 #endif
 
-#if BA_ENABLE_LUA_OPCUA > 0
+#if BA_ENABLE_LUA_OPCUA == 2
+#include <opcua_packed.h>
+#elif BA_ENABLE_LUA_OPCUA == 1
 #include <opcua_module.h>
 #endif
 
@@ -1855,7 +1857,9 @@ runMako(int isWinService, int argc, char* argv[], char* envp[])
    balua_revcon(L);
 #endif
 
-#if BA_ENABLE_LUA_OPCUA > 0
+#if BA_ENABLE_LUA_OPCUA == 2
+   luaopen_opcua_packed_static(L);
+#elif BA_ENABLE_LUA_OPCUA == 1
    luaopen_opcua_ns0_static(L);
 #endif
 

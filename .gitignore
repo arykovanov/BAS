@@ -9,4 +9,8 @@
 /.sharkssl-*
 /examples/MakoServer/src/NewEncryptionKey.h
 /src/opcua*.c
+!/src/opcua_packed.c
+!/src/opcua_ns0_blob.c
+/src/opcua_packed.h
+/src/opcua_ns0.h
 /src/sqlite*

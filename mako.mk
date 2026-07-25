@@ -45,7 +45,15 @@ ifeq (,$(wildcard $(BASRESDIR)/build))
 $(error $(BASRESDIR) not found. Set BASRESDIR to the https://github.com/RealTimeLogic/BAS-Resources checkout!)
 endif
 
-BA_ENABLE_LUA_OPCUA?=1
+# A source checkout selects external OPC UA unless a mode is explicitly set.
+BA_ENABLE_LUA_OPCUA ?= $(if $(strip $(OPCUA_ROOT)),2,1)
+OPCUA_PROFILE ?= full
+ifeq ($(filter $(BA_ENABLE_LUA_OPCUA),0 1 2),)
+$(error BA_ENABLE_LUA_OPCUA must be 0, 1, or 2)
+endif
+export OPCUA_PROFILE
+# BAS-Resources still uses this environment variable for Lua packaging.
+export BA_ENABLE_LUA_OPCUA := $(BA_ENABLE_LUA_OPCUA)
 DEBUG?=0
 
 # Keep the existing EPOLL option compatible with earlier build commands.
@@ -156,33 +164,42 @@ endif
 CFLAGS += $(D)MAKO_ENABLE_LUA_MODULE_INTERFACE=1
 CFLAGS += $(D)BA_ENABLE_LUA_DEBUGGER=1
 
-ifdef OPCUA_ROOT
-
-src/opcua_module.c: $(OPCUA_ROOT)/opcua_module.c
-	cp -f $(OPCUA_ROOT)/opcua_module.c src/opcua_module.c
-
-src/opcua_get_node.c: $(OPCUA_ROOT)/opcua_get_node.c
-	cp -f $(OPCUA_ROOT)/opcua_get_node.c src/opcua_get_node.c
-
-src/opcua_ns0.c: $(OPCUA_ROOT)/opcua_ns0.c
-	cp -f $(OPCUA_ROOT)/opcua_ns0.c src/opcua_ns0.c
-
-
-.PHONY += opcua
-opcua: src/opcua_ns0.c src/opcua_get_node.c src/opcua_module.c
-	@echo "Use OPCUA from $(OPCUA_ROOT)"
-
-BA_ENABLE_LUA_OPCUA=2
-SOURCE += opcua_module.c opcua_get_node.c opcua_ns0.c
-CFLAGS += $(I)$(OPCUA_ROOT) $(D)BA_ENABLE_LUA_OPCUA=2
-else
-
-ifneq ($(BA_ENABLE_LUA_OPCUA),0)
 CFLAGS += $(D)BA_ENABLE_LUA_OPCUA=$(BA_ENABLE_LUA_OPCUA)
-else
-CFLAGS += $(D)BA_ENABLE_LUA_OPCUA=0
-endif
 
+.PHONY: opcua _force_opcua_sources
+ifeq ($(BA_ENABLE_LUA_OPCUA),2)
+ifeq ($(strip $(OPCUA_ROOT)),)
+$(error BA_ENABLE_LUA_OPCUA=2 requires OPCUA_ROOT)
+endif
+override OPCUA_ROOT := $(abspath $(OPCUA_ROOT))
+export OPCUA_ROOT
+include $(OPCUA_ROOT)/opcua_profile.mk
+
+# Compare on every build so switching profiles or source trees also works
+# when the newly selected source has an older timestamp.
+src/opcua_packed.c: $(OPCUA_ROOT)/opcua_packed.c _force_opcua_sources
+	cmp -s '$<' '$@' || cp -f '$<' '$@'
+
+src/opcua_packed.h: $(OPCUA_ROOT)/opcua_packed.h _force_opcua_sources
+	cmp -s '$<' '$@' || cp -f '$<' '$@'
+
+src/opcua_ns0.c: $(OPCUA_NS0_C) _force_opcua_sources
+	cmp -s '$<' '$@' || cp -f '$<' '$@'
+
+src/opcua_ns0.h: $(OPCUA_NS0_H) _force_opcua_sources
+	cmp -s '$<' '$@' || cp -f '$<' '$@'
+
+opcua: src/opcua_packed.c src/opcua_packed.h src/opcua_ns0.c src/opcua_ns0.h
+	@echo "Use OPCUA from $(OPCUA_ROOT) ($(OPCUA_PROFILE))"
+
+SOURCE += opcua_packed.c opcua_ns0.c
+CFLAGS += $(I)src
+
+$(ODIR)/opcua_packed.$(OBJEXT): src/opcua_packed.c src/opcua_packed.h src/opcua_ns0.h
+$(ODIR)/opcua_ns0.$(OBJEXT): src/opcua_ns0.c src/opcua_ns0.h
+else
+opcua:
+	@echo "$(if $(filter 1,$(BA_ENABLE_LUA_OPCUA)),Use embedded OPCUA,Excluded OPCUA)"
 endif
 
 #Do we have SQLite?
@@ -260,9 +277,17 @@ O = .$(OBJEXT)
 include SharkSslAsm.mk
 
 OBJS = $(SOURCE:%.c=$(ODIR)/%.$(OBJEXT)) $(SHARKSSL_ASM_OBJS)
+OPCUA_MODE_OBJS = \
+	$(ODIR)/BAS.opcua$(BA_ENABLE_LUA_OPCUA).$(OBJEXT) \
+	$(ODIR)/MakoMain.opcua$(BA_ENABLE_LUA_OPCUA).$(OBJEXT)
+OBJS := $(filter-out $(ODIR)/BAS.$(OBJEXT) $(ODIR)/MakoMain.$(OBJEXT),$(OBJS))
+OBJS += $(OPCUA_MODE_OBJS)
 $(OBJS): $(SHARKSSL_STAMP)
-$(ODIR)/BAS.$(OBJEXT): src/crypto/SharkSslCryptoASM.h
-$(ODIR)/MakoMain.$(OBJEXT): $(ENCRYPTION_KEY_HEADER)
+$(ODIR)/BAS.opcua$(BA_ENABLE_LUA_OPCUA).$(OBJEXT): src/crypto/SharkSslCryptoASM.h
+$(ODIR)/MakoMain.opcua$(BA_ENABLE_LUA_OPCUA).$(OBJEXT): $(ENCRYPTION_KEY_HEADER)
+ifeq ($(BA_ENABLE_LUA_OPCUA),2)
+$(ODIR)/MakoMain.opcua2.$(OBJEXT): src/opcua_packed.h
+endif
 $(OBJS) $(SHARKSSL_STAMP): | $(ODIR)
 
 $(ODIR):
@@ -280,6 +305,12 @@ else
 endif
 
 # Implicit rules for making object files from .c files
+$(ODIR)/BAS.opcua$(BA_ENABLE_LUA_OPCUA).$(OBJEXT): BAS.c
+	$(CC) $(CFLAGS) $(if $(filter obj,$(OBJEXT)),/c /Fo$@,-c -o $@) $<
+
+$(ODIR)/MakoMain.opcua$(BA_ENABLE_LUA_OPCUA).$(OBJEXT): MakoMain.c
+	$(CC) $(CFLAGS) $(if $(filter obj,$(OBJEXT)),/c /Fo$@,-c -o $@) $<
+
 $(ODIR)/%.obj : %.c
 	$(CC) $(CFLAGS) /c /Fo$@ $<
 
@@ -287,12 +318,13 @@ $(ODIR)/%.o : %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # Must be in the same directory as the mako executable
-mako.zip:
+# A profile or mode switch must also replace the packaged Lua sources.
+mako.zip: _force_opcua_sources
 ifeq ($(WINDOWS),1)
-	cmd /c "cd /d $(subst /,\,$(BASRESDIR))\build && echo n|mako.cmd"
+	cmd /c "set OPCUA_ROOT=$(if $(filter 2,$(BA_ENABLE_LUA_OPCUA)),$(OPCUA_ROOT))&&cd /d $(subst /,\,$(BASRESDIR))\build && echo n|mako.cmd"
 	cmd /c "copy /Y $(subst /,\,$(BASRESDIR))\build\mako.zip ."
 else
-	cd $(BASRESDIR)/build&&./mako.sh
+	cd $(BASRESDIR)/build&&OPCUA_ROOT='$(if $(filter 2,$(BA_ENABLE_LUA_OPCUA)),$(OPCUA_ROOT))' ./mako.sh
 	cp $(BASRESDIR)/build/mako.zip .
 endif
 

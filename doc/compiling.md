@@ -394,7 +394,7 @@ Boolean switches accept numeric `0` or `1`. Options with several choices use the
 
 - `BA_ENABLE_LUA_DEBUGGER=1`: Include [Lua debugger support](https://makoserver.net/articles/Lua-and-LSP-Debugging).
 - `BA_ENABLE_REVERSE_CONNECTION=1`: Enable reverse connections for the connection bridge feature in [SharkTrustX](https://realtimelogic.com/products/SharkTrustX/).
-- `BA_ENABLE_LUA_OPCUA=1`: Enable OPC UA support when the build also includes the required OPC UA Lua resources and C module.
+- `BA_ENABLE_LUA_OPCUA=0|1|2`: `0` disables OPC UA; `1` enables the sources embedded in BAS; `2` enables external packed-model sources. With `mako.mk`, mode `2` requires `OPCUA_ROOT` pointing to a profile-capable OPC UA checkout. `OPCUA_PROFILE=full|min` (default `full`) selects its native model and Lua resources. Supplying `OPCUA_ROOT` defaults the mode to `2`; an explicit `0` or `1` takes precedence. The Lua resources must be packaged for either enabled mode.
 - `BA_ENABLE_EMBEDDED_CA=1`: Required for a standalone Xedge build, in both BAS and the host sources. Uses `inc/cacert.h` without retaining a heap copy; the Xedge resource ZIP contains no `.certificate/cacert.shark`. Other BAS hosts select their own CA mode.
 - `BA_ENABLE_LUA_FORKPTY=1`: Enable the [advanced process management API](https://realtimelogic.com/ba/doc/en/lua/auxlua.html#forkptylib), available for Linux and QNX. This API is required for the [CGI plugin](https://github.com/RealTimeLogic/LSP-Examples/tree/master/CGI) and the [web shell](https://makoserver.net/articles/Linux-Web-Shell).
 - `BA_ENABLE_REVERSE_PROXY=1`: Enable the [reverse proxy](https://realtimelogic.com/ba/doc/en/lua/auxlua.html#reverseproxy).
