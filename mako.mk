@@ -126,27 +126,24 @@ CFLAGS += $(D)USE_DBGMON=1
 
 ifdef OPCUA_ROOT
 
-src/opcua_module.c: $(OPCUA_ROOT)/opcua_module.c
-	cp -f $(OPCUA_ROOT)/opcua_module.c src/opcua_module.c
-
-src/opcua_get_node.c: $(OPCUA_ROOT)/opcua_get_node.c
-	cp -f $(OPCUA_ROOT)/opcua_get_node.c src/opcua_get_node.c
+src/opcua_packed.c: $(OPCUA_ROOT)/opcua_packed.c
+	cp -f $(OPCUA_ROOT)/opcua_packed.c src/opcua_packed.c
 
 src/opcua_ns0.c: $(OPCUA_ROOT)/opcua_ns0.c
 	cp -f $(OPCUA_ROOT)/opcua_ns0.c src/opcua_ns0.c
 
-
 .PHONY += opcua
-opcua: src/opcua_ns0.c src/opcua_get_node.c src/opcua_module.c
+opcua: src/opcua_packed.c src/opcua_ns0.c
 	@echo "Use OPCUA from $(OPCUA_ROOT)"
 
-USE_OPCUA=2
-SOURCE += opcua_module.c opcua_get_node.c opcua_ns0.c
+override USE_OPCUA=2
+SOURCE += opcua_packed.c opcua_ns0.c
 CFLAGS += -I${OPCUA_ROOT} -DUSE_OPCUA=2
 else
 
 ifeq ($(USE_OPCUA),1)
 CFLAGS += -DUSE_OPCUA=1
+SOURCE += opcua_packed.c opcua_ns0.c
 
 opcua:
 	@echo "Use embedded OPCUA"
@@ -234,9 +231,14 @@ O = .$(OBJEXT)
 include SharkSslAsm.mk
 
 OBJS = $(SOURCE:%.c=$(ODIR)/%.$(OBJEXT)) $(SHARKSSL_ASM_OBJS)
+OPCUA_MODE_OBJS = \
+	$(ODIR)/BAS.opcua$(USE_OPCUA).$(OBJEXT) \
+	$(ODIR)/MakoMain.opcua$(USE_OPCUA).$(OBJEXT)
+OBJS := $(filter-out $(ODIR)/BAS.$(OBJEXT) $(ODIR)/MakoMain.$(OBJEXT),$(OBJS))
+OBJS += $(OPCUA_MODE_OBJS)
 $(OBJS): $(SHARKSSL_STAMP)
-$(ODIR)/BAS.$(OBJEXT): src/crypto/SharkSslCryptoASM.h
-$(ODIR)/MakoMain.$(OBJEXT): $(ENCRYPTION_KEY_HEADER)
+$(ODIR)/BAS.opcua$(USE_OPCUA).$(OBJEXT): src/crypto/SharkSslCryptoASM.h
+$(ODIR)/MakoMain.opcua$(USE_OPCUA).$(OBJEXT): $(ENCRYPTION_KEY_HEADER)
 $(OBJS) $(SHARKSSL_STAMP): | $(ODIR)
 
 $(ODIR):
@@ -254,6 +256,12 @@ else
 endif
 
 # Implicit rules for making object files from .c files
+$(ODIR)/BAS.opcua$(USE_OPCUA).$(OBJEXT): BAS.c
+	$(CC) $(CFLAGS) $(if $(filter obj,$(OBJEXT)),/c /Fo$@,-c -o $@) $<
+
+$(ODIR)/MakoMain.opcua$(USE_OPCUA).$(OBJEXT): MakoMain.c
+	$(CC) $(CFLAGS) $(if $(filter obj,$(OBJEXT)),/c /Fo$@,-c -o $@) $<
+
 $(ODIR)/%.obj : %.c
 	$(CC) $(CFLAGS) /c /Fo$@ $<
 
