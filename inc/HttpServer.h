@@ -1115,6 +1115,12 @@ typedef struct HttpRequest
       */
       int wsUpgrade();
 
+      /** Activate a WebSocket handshake and select a WebSocket
+          subprotocol. The function returns 0 on successful handshake
+          and a negative value if the client is not a WebSocket client.
+      */
+      int wsUpgrade(const char* protocol);
+
       /** Return an HTTP header iterator that can iterate and fetch all
           the HTTP headers.
 
@@ -1284,6 +1290,7 @@ BA_API HttpHeader* HttpRequest_getHeaders(HttpRequest* o, int* len);
     @param o Required live request.
  */
 BA_API int HttpRequest_wsUpgrade(HttpRequest* o);
+BA_API int HttpRequest_wsUpgrade2(HttpRequest* o, const char* protocol);
 BA_API BaBool HttpRequest_enableKeepAlive(HttpRequest* o);
 BA_API int HttpRequest_pushBackData(HttpRequest* o);
 #ifndef NO_HTTP_SESSION
@@ -1331,6 +1338,9 @@ inline const char* HttpRequest::getParameter(const char* paramName) {
    return HttpRequest_getParameter(this, paramName); }
 inline int HttpRequest::wsUpgrade() {
    return HttpRequest_wsUpgrade(this);
+}
+inline int HttpRequest::wsUpgrade(const char* protocol) {
+   return HttpRequest_wsUpgrade2(this, protocol);
 }
 inline HttpHeader* HttpRequest::getHeaders(int* len) {
    return HttpRequest_getHeaders(this, len); }

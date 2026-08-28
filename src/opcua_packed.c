@@ -26,23 +26,26 @@ typedef struct PackedProvider
    /* Total blob size in bytes, including the header. */
    size_t size;
 
-   /* Number of fixed-size records in the node section. */
+   /* Number of nodes indexed by the two parallel offset arrays. */
    uint32_t nodeCount;
 
-   /* Absolute byte offset of the node section. */
-   uint32_t nodeOffset;
+   /* Absolute byte offset of the sorted NodeId-offset array. */
+   uint32_t nodeIdIndexOffset;
+
+   /* Absolute byte offset of the node-body-offset array. */
+   uint32_t nodeBodyIndexOffset;
+
+   /* Absolute byte offset of the variable-size node bodies. */
+   uint32_t nodeBodyOffset;
+
+   /* Total bytes occupied by all variable-size node bodies. */
+   uint32_t nodeBodySize;
 
    /* Total attribute records for all nodes. */
    uint32_t attributeCount;
 
-   /* Absolute byte offset of the attribute section. */
-   uint32_t attributeOffset;
-
    /* Total reference records owned by blob nodes. */
    uint32_t referenceCount;
-
-   /* Absolute byte offset of the reference section. */
-   uint32_t referenceOffset;
 
    /* Number of inverse references whose target is outside this blob. */
    uint32_t externalReferenceCount;
@@ -52,9 +55,6 @@ typedef struct PackedProvider
 
    /* Total non-attribute metadata records for all nodes. */
    uint32_t fieldCount;
-
-   /* Absolute byte offset of the metadata-field section. */
-   uint32_t fieldOffset;
 
    /* Absolute byte offset of encoded attribute and metadata values. */
    uint32_t valueOffset;
@@ -67,6 +67,36 @@ typedef struct PackedProvider
 
    /* Size in bytes of the string pool. */
    uint32_t stringSize;
+
+   /* Width in bytes of node indices stored in external references. */
+   uint8_t indexWidth;
+
+   /* Width of NodeId string offsets in the sorted node index. */
+   uint8_t nodeIdOffsetWidth;
+
+   /* Width of offsets relative to the node-body section. */
+   uint8_t nodeBodyOffsetWidth;
+
+   /* Width in bytes of relative string-pool offsets. */
+   uint8_t stringOffsetWidth;
+
+   /* Width in bytes of relative encoded-value offsets. */
+   uint8_t valueOffsetWidth;
+
+   /* Width in bytes of each string-pool entry's length prefix. */
+   uint8_t stringLengthWidth;
+
+   /* Size of one AttributeRecord for the selected value-offset width. */
+   uint8_t attributeRecordSize;
+
+   /* Size of one source-node/local-reference external index record. */
+   uint8_t externalReferenceRecordSize;
+
+   /* Size of one ReferenceRecord for the selected string-offset width. */
+   uint8_t referenceRecordSize;
+
+   /* Size of one FieldRecord for the selected string-offset width. */
+   uint8_t fieldRecordSize;
 } PackedProvider;
 
 typedef struct PackedView
@@ -74,8 +104,8 @@ typedef struct PackedView
    /* Provider that owns the blob and the indexed node. */
    PackedProvider* provider;
 
-   /* Zero-based index of the node represented by this Lua view. */
-   uint32_t nodeIndex;
+   /* Offset of the node body relative to the node-body section. */
+   uint32_t nodeOffset;
 } PackedView;
 
 typedef enum PackedChecksumPolicy
@@ -100,6 +130,30 @@ static uint32_t readU32(const uint8_t* p)
       ((uint32_t)p[1] << 8) |
       ((uint32_t)p[2] << 16) |
       ((uint32_t)p[3] << 24);
+}
+
+/* Read a record index using the width selected by the blob header. */
+static uint32_t readIndex(const uint8_t* p, uint8_t width)
+{
+   if (width == 1u)
+      return p[0];
+   if (width == 2u)
+      return readU16(p);
+   return readU32(p);
+}
+
+/* Read a relative string-pool offset using the width in the blob header. */
+static uint32_t readStringOffset(
+   const PackedProvider* provider, const uint8_t* p)
+{
+   return readIndex(p, provider->stringOffsetWidth);
+}
+
+/* Read an offset relative to the beginning of the encoded-value section. */
+static uint32_t readValueOffset(
+   const PackedProvider* provider, const uint8_t* p)
+{
+   return readIndex(p, provider->valueOffsetWidth);
 }
 
 /* Read an unaligned little-endian 64-bit integer from the blob. */
@@ -152,15 +206,55 @@ static int getString(
    uint64_t entry = (uint64_t)provider->stringOffset + relativeOffset;
    uint32_t size;
    if (relativeOffset > provider->stringSize ||
-       entry + 4u > provider->size)
+       entry + provider->stringLengthWidth > provider->size)
       return 0;
 
-   size = readU32(provider->data + (size_t)entry);
-   if ((uint64_t)relativeOffset + 4u + size > provider->stringSize)
+   size = readIndex(
+      provider->data + (size_t)entry, provider->stringLengthWidth);
+   if ((uint64_t)relativeOffset + provider->stringLengthWidth + size >
+       provider->stringSize)
       return 0;
 
-   *value = provider->data + (size_t)entry + 4u;
+   *value = provider->data + (size_t)entry + provider->stringLengthWidth;
    *length = size;
+   return 1;
+}
+
+/* Validate every variable-length string-pool entry and the selected width. */
+static int validateStringPool(
+   const PackedProvider* provider, const char** error)
+{
+   uint32_t offset = 0;
+   uint32_t maxLength = 0;
+   uint8_t expectedWidth;
+   while (offset < provider->stringSize)
+   {
+      uint32_t remaining = provider->stringSize - offset;
+      uint32_t length;
+      if (remaining < provider->stringLengthWidth)
+      {
+         *error = "packed string length prefix is truncated";
+         return 0;
+      }
+      length = readIndex(
+         provider->data + provider->stringOffset + offset,
+         provider->stringLengthWidth);
+      if (length > remaining - provider->stringLengthWidth)
+      {
+         *error = "packed string data is truncated";
+         return 0;
+      }
+      if (length > maxLength)
+         maxLength = length;
+      offset += provider->stringLengthWidth + length;
+   }
+   expectedWidth = maxLength <= 0xFFu ? 1u :
+      (maxLength <= 0xFFFFu ? 2u : 4u);
+   if (provider->stringLengthWidth != expectedWidth)
+   {
+      *error = "packed string length width is not minimal";
+      return 0;
+   }
    return 1;
 }
 
@@ -198,10 +292,11 @@ static int skipValue(
       {
          const uint8_t* value;
          uint32_t length;
-         if ((size_t)(end - p) < 4u ||
-             !getString(provider, readU32(p), &value, &length))
+         if ((size_t)(end - p) < provider->stringOffsetWidth ||
+             !getString(
+                provider, readStringOffset(provider, p), &value, &length))
             return 0;
-         p += 4;
+         p += provider->stringOffsetWidth;
          break;
       }
 
@@ -230,31 +325,101 @@ static int skipValue(
    return 1;
 }
 
-/* Return the address of a node record by its zero-based index. */
-static const uint8_t* nodeRecord(
+/* Return a NodeId string offset from the sorted node index. */
+static uint32_t nodeIdOffset(
    const PackedProvider* provider,
    uint32_t index)
 {
-   return provider->data + provider->nodeOffset +
-      (size_t)index * OPCUA_PACKED_NODE_RECORD_SIZE;
+   return readIndex(
+      provider->data + provider->nodeIdIndexOffset +
+         (size_t)index * provider->nodeIdOffsetWidth,
+      provider->nodeIdOffsetWidth);
 }
 
-/* Return the address of an attribute record by its global index. */
-static const uint8_t* attributeRecord(
+/* Return a node-body offset from its parallel index. */
+static uint32_t indexedNodeBodyOffset(
    const PackedProvider* provider,
    uint32_t index)
 {
-   return provider->data + provider->attributeOffset +
-      (size_t)index * OPCUA_PACKED_ATTRIBUTE_RECORD_SIZE;
+   return readIndex(
+      provider->data + provider->nodeBodyIndexOffset +
+         (size_t)index * provider->nodeBodyOffsetWidth,
+      provider->nodeBodyOffsetWidth);
 }
 
-/* Return the address of a reference record by its global index. */
-static const uint8_t* referenceRecord(
+/* Return a node body by its offset relative to the node-body section. */
+static const uint8_t* nodeBody(
+   const PackedProvider* provider,
+   uint32_t offset)
+{
+   return provider->data + provider->nodeBodyOffset + offset;
+}
+
+/* Return the node body selected by a zero-based node index. */
+static const uint8_t* indexedNodeBody(
    const PackedProvider* provider,
    uint32_t index)
 {
-   return provider->data + provider->referenceOffset +
-      (size_t)index * OPCUA_PACKED_REFERENCE_RECORD_SIZE;
+   return nodeBody(provider, indexedNodeBodyOffset(provider, index));
+}
+
+/* Return the number of attributes owned by a node. */
+static uint8_t nodeAttributeCount(const uint8_t* node)
+{
+   return (uint8_t)(node[0] & 0x7Fu);
+}
+
+/* Return the number of metadata fields owned by a node. */
+static uint8_t nodeFieldCount(const uint8_t* node)
+{
+   return (node[0] & 0x80u) != 0u ? node[1] : 0u;
+}
+
+/* Return the byte size of a node body's count header. */
+static uint8_t nodeHeaderSize(const uint8_t* node)
+{
+   return (uint8_t)(((node[0] & 0x80u) != 0u) ? 4u : 3u);
+}
+
+/* Return the number of references owned by a node. */
+static uint16_t nodeReferenceCount(const uint8_t* node)
+{
+   return readU16(node + (((node[0] & 0x80u) != 0u) ? 2u : 1u));
+}
+
+/* Return the first inline attribute record owned by a node. */
+static const uint8_t* nodeAttributes(const uint8_t* node)
+{
+   return node + nodeHeaderSize(node);
+}
+
+/* Return the first inline reference record owned by a node. */
+static const uint8_t* nodeReferences(
+   const PackedProvider* provider,
+   const uint8_t* node)
+{
+   return nodeAttributes(node) +
+      (size_t)nodeAttributeCount(node) * provider->attributeRecordSize;
+}
+
+/* Return the first inline metadata-field record owned by a node. */
+static const uint8_t* nodeFields(
+   const PackedProvider* provider,
+   const uint8_t* node)
+{
+   return nodeReferences(provider, node) +
+      (size_t)nodeReferenceCount(node) * provider->referenceRecordSize;
+}
+
+/* Return the calculated byte size of one complete node body. */
+static size_t nodeBodySize(
+   const PackedProvider* provider,
+   const uint8_t* node)
+{
+   return nodeHeaderSize(node) +
+      (size_t)nodeAttributeCount(node) * provider->attributeRecordSize +
+      (size_t)nodeReferenceCount(node) * provider->referenceRecordSize +
+      (size_t)nodeFieldCount(node) * provider->fieldRecordSize;
 }
 
 /* Return an external-reference index entry by its zero-based index. */
@@ -263,16 +428,7 @@ static const uint8_t* externalReferenceRecord(
    uint32_t index)
 {
    return provider->data + provider->externalReferenceOffset +
-      (size_t)index * OPCUA_PACKED_EXTERNAL_REFERENCE_RECORD_SIZE;
-}
-
-/* Return a metadata-field record by its global index. */
-static const uint8_t* fieldRecord(
-   const PackedProvider* provider,
-   uint32_t index)
-{
-   return provider->data + provider->fieldOffset +
-      (size_t)index * OPCUA_PACKED_FIELD_RECORD_SIZE;
+      (size_t)index * provider->externalReferenceRecordSize;
 }
 
 /* Compare two arbitrary byte strings in deterministic lexical order. */
@@ -322,6 +478,12 @@ static int validateProvider(
    uint32_t totalSize;
    uint32_t checksum;
    uint32_t i;
+   uint64_t indexCapacity;
+   uint64_t expectedNodeBodyOffset = 0;
+   uint64_t nodeIdStringSize = 0;
+   uint64_t validatedAttributeCount = 0;
+   uint64_t validatedReferenceCount = 0;
+   uint64_t validatedFieldCount = 0;
 
    if (provider->size < OPCUA_PACKED_HEADER_SIZE)
    {
@@ -359,39 +521,114 @@ static int validateProvider(
    }
 
    provider->nodeCount = readU32(data + 16);
-   provider->nodeOffset = readU32(data + 20);
-   provider->attributeCount = readU32(data + 24);
-   provider->attributeOffset = readU32(data + 28);
-   provider->referenceCount = readU32(data + 32);
-   provider->referenceOffset = readU32(data + 36);
-   provider->externalReferenceCount = readU32(data + 40);
-   provider->externalReferenceOffset = readU32(data + 44);
-   provider->fieldCount = readU32(data + 48);
-   provider->fieldOffset = readU32(data + 52);
+   provider->nodeIdIndexOffset = readU32(data + 20);
+   provider->nodeBodyIndexOffset = readU32(data + 24);
+   provider->nodeBodyOffset = readU32(data + 28);
+   provider->nodeBodySize = readU32(data + 32);
+   provider->attributeCount = readU32(data + 36);
+   provider->referenceCount = readU32(data + 40);
+   provider->externalReferenceCount = readU32(data + 44);
+   provider->externalReferenceOffset = readU32(data + 48);
+   provider->fieldCount = readU32(data + 52);
    provider->valueOffset = readU32(data + 56);
    provider->valueSize = readU32(data + 60);
    provider->stringOffset = readU32(data + 64);
    provider->stringSize = readU32(data + 68);
+   provider->indexWidth = data[72];
+   provider->nodeIdOffsetWidth = data[73];
+   provider->nodeBodyOffsetWidth = data[74];
+   provider->stringOffsetWidth = data[75];
+   provider->valueOffsetWidth = data[76];
+   provider->stringLengthWidth = data[77];
 
-   if (provider->nodeOffset != OPCUA_PACKED_HEADER_SIZE ||
+   if ((provider->indexWidth != 1u && provider->indexWidth != 2u &&
+        provider->indexWidth != 4u) ||
+       (provider->nodeIdOffsetWidth != 1u &&
+        provider->nodeIdOffsetWidth != 2u &&
+        provider->nodeIdOffsetWidth != 4u) ||
+       (provider->nodeBodyOffsetWidth != 1u &&
+        provider->nodeBodyOffsetWidth != 2u &&
+        provider->nodeBodyOffsetWidth != 4u) ||
+       (provider->stringOffsetWidth != 1u &&
+        provider->stringOffsetWidth != 2u &&
+        provider->stringOffsetWidth != 4u) ||
+       (provider->valueOffsetWidth != 1u &&
+        provider->valueOffsetWidth != 2u &&
+        provider->valueOffsetWidth != 4u) ||
+       (provider->stringLengthWidth != 1u &&
+        provider->stringLengthWidth != 2u &&
+        provider->stringLengthWidth != 4u) ||
+       data[78] != 0u || data[79] != 0u)
+   {
+      *error = "packed integer width is invalid";
+      return 0;
+   }
+   indexCapacity = provider->indexWidth == 1u ? 0x100u :
+      (provider->indexWidth == 2u ? 0x10000u : 0x100000000ULL);
+   if ((uint64_t)provider->nodeCount > indexCapacity ||
+       (provider->indexWidth == 2u && provider->nodeCount <= 0x100u) ||
+       (provider->indexWidth == 4u && provider->nodeCount <= 0x10000u))
+   {
+      *error = "packed index width does not match record counts";
+      return 0;
+   }
+   indexCapacity = provider->nodeBodyOffsetWidth == 1u ? 0x100u :
+      (provider->nodeBodyOffsetWidth == 2u ?
+       0x10000u : 0x100000000ULL);
+   if ((uint64_t)provider->nodeBodySize > indexCapacity ||
+       (provider->nodeBodyOffsetWidth == 2u &&
+        provider->nodeBodySize <= 0x100u) ||
+       (provider->nodeBodyOffsetWidth == 4u &&
+        provider->nodeBodySize <= 0x10000u))
+   {
+      *error = "packed node body offset width does not match body size";
+      return 0;
+   }
+   indexCapacity = provider->stringOffsetWidth == 1u ? 0x100u :
+      (provider->stringOffsetWidth == 2u ? 0x10000u : 0x100000000ULL);
+   if ((uint64_t)provider->stringSize > indexCapacity ||
+       (provider->stringOffsetWidth == 2u &&
+        provider->stringSize <= 0x100u) ||
+       (provider->stringOffsetWidth == 4u &&
+        provider->stringSize <= 0x10000u))
+   {
+      *error = "packed string offset width does not match string size";
+      return 0;
+   }
+   indexCapacity = provider->valueOffsetWidth == 1u ? 0x100u :
+      (provider->valueOffsetWidth == 2u ? 0x10000u : 0x100000000ULL);
+   if ((uint64_t)provider->valueSize > indexCapacity ||
+       (provider->valueOffsetWidth == 2u &&
+        provider->valueSize <= 0x100u) ||
+       (provider->valueOffsetWidth == 4u &&
+        provider->valueSize <= 0x10000u))
+   {
+      *error = "packed value offset width does not match value size";
+      return 0;
+   }
+   provider->attributeRecordSize =
+      (uint8_t)(1u + provider->valueOffsetWidth);
+   provider->externalReferenceRecordSize =
+      (uint8_t)(provider->indexWidth + 2u);
+   provider->referenceRecordSize =
+      (uint8_t)(2u * provider->stringOffsetWidth + 1u);
+   provider->fieldRecordSize =
+      (uint8_t)(provider->stringOffsetWidth + provider->valueOffsetWidth);
+
+   if (provider->nodeIdIndexOffset != OPCUA_PACKED_HEADER_SIZE ||
        !checkedSection(
-          provider->nodeOffset, provider->nodeCount,
-          OPCUA_PACKED_NODE_RECORD_SIZE, provider->attributeOffset) ||
+          provider->nodeIdIndexOffset, provider->nodeCount,
+          provider->nodeIdOffsetWidth, provider->nodeBodyIndexOffset) ||
        !checkedSection(
-          provider->attributeOffset, provider->attributeCount,
-          OPCUA_PACKED_ATTRIBUTE_RECORD_SIZE, provider->referenceOffset) ||
-       !checkedSection(
-          provider->referenceOffset, provider->referenceCount,
-          OPCUA_PACKED_REFERENCE_RECORD_SIZE,
-          provider->externalReferenceOffset) ||
+          provider->nodeBodyIndexOffset, provider->nodeCount,
+          provider->nodeBodyOffsetWidth, provider->nodeBodyOffset) ||
+       (uint64_t)provider->nodeBodyOffset + provider->nodeBodySize !=
+          provider->externalReferenceOffset ||
        !checkedSection(
           provider->externalReferenceOffset,
           provider->externalReferenceCount,
-          OPCUA_PACKED_EXTERNAL_REFERENCE_RECORD_SIZE,
-          provider->fieldOffset) ||
-       !checkedSection(
-          provider->fieldOffset, provider->fieldCount,
-          OPCUA_PACKED_FIELD_RECORD_SIZE, provider->valueOffset) ||
+          provider->externalReferenceRecordSize,
+          provider->valueOffset) ||
        (uint64_t)provider->valueOffset + provider->valueSize !=
           provider->stringOffset ||
        (uint64_t)provider->stringOffset + provider->stringSize !=
@@ -400,112 +637,193 @@ static int validateProvider(
       *error = "packed section bounds are invalid";
       return 0;
    }
+   if (!validateStringPool(provider, error))
+      return 0;
 
    for (i = 0; i < provider->nodeCount; ++i)
    {
-      const uint8_t* record = nodeRecord(provider, i);
+      uint32_t idOffset = nodeIdOffset(provider, i);
+      uint32_t bodyOffset = indexedNodeBodyOffset(provider, i);
       const uint8_t* nodeId;
+      const uint8_t* node;
       uint32_t nodeIdLength;
-      uint32_t attributeStart = readU32(record + 4);
-      uint32_t referenceStart = readU32(record + 8);
-      uint16_t attributeCount = readU16(record + 12);
-      uint16_t referenceCount = readU16(record + 14);
-      uint32_t fieldStart = readU32(record + 16);
-      uint16_t fieldCount = readU16(record + 20);
+      uint8_t attributeCount;
+      uint8_t fieldCount;
+      uint16_t referenceCount;
+      uint32_t j;
+      size_t bodySize;
 
-      if (!getString(provider, readU32(record), &nodeId, &nodeIdLength) ||
-          (uint64_t)attributeStart + attributeCount >
-             provider->attributeCount ||
-          (uint64_t)referenceStart + referenceCount >
-             provider->referenceCount ||
-          (uint64_t)fieldStart + fieldCount > provider->fieldCount)
+      if ((uint64_t)idOffset != nodeIdStringSize ||
+          !getString(provider, idOffset, &nodeId, &nodeIdLength))
       {
-         *error = "packed node record is invalid";
+         *error = "packed NodeId index is invalid";
          return 0;
       }
+      nodeIdStringSize += provider->stringLengthWidth + nodeIdLength;
 
       if (i > 0)
       {
-         const uint8_t* previous = nodeRecord(provider, i - 1);
          const uint8_t* previousId;
          uint32_t previousLength;
-         if (!getString(
-                provider, readU32(previous), &previousId, &previousLength) ||
-             compareBytes(
+         getString(
+            provider, nodeIdOffset(provider, i - 1),
+            &previousId, &previousLength);
+         if (compareBytes(
                 previousId, previousLength, nodeId, nodeIdLength) >= 0)
          {
             *error = "packed node index is not strictly sorted";
             return 0;
          }
       }
+
+      if ((uint64_t)bodyOffset != expectedNodeBodyOffset ||
+          bodyOffset >= provider->nodeBodySize ||
+          provider->nodeBodySize - bodyOffset < 3u)
+      {
+         *error = "packed node body index is invalid";
+         return 0;
+      }
+      node = nodeBody(provider, bodyOffset);
+      if ((node[0] & 0x80u) != 0u &&
+          provider->nodeBodySize - bodyOffset < 4u)
+      {
+         *error = "packed node body header is invalid";
+         return 0;
+      }
+      attributeCount = nodeAttributeCount(node);
+      fieldCount = nodeFieldCount(node);
+      referenceCount = nodeReferenceCount(node);
+      bodySize = nodeBodySize(provider, node);
+      if (expectedNodeBodyOffset + bodySize > provider->nodeBodySize)
+      {
+         *error = "packed node body is invalid";
+         return 0;
+      }
+      expectedNodeBodyOffset += bodySize;
+      validatedAttributeCount += attributeCount;
+      validatedReferenceCount += referenceCount;
+      validatedFieldCount += fieldCount;
+
+      for (j = 0; j < attributeCount; ++j)
+      {
+         const uint8_t* record = nodeAttributes(node) +
+            (size_t)j * provider->attributeRecordSize;
+         uint32_t offset = readValueOffset(provider, record + 1);
+         const uint8_t* cursor;
+         if ((j > 0 && record[-provider->attributeRecordSize] >= record[0]) ||
+             offset >= provider->valueSize)
+         {
+            *error = "packed attribute record is invalid";
+            return 0;
+         }
+         cursor = provider->data + provider->valueOffset + offset;
+         if (!skipValue(provider, &cursor, 0))
+         {
+            *error = "packed attribute value is invalid";
+            return 0;
+         }
+      }
+
+      for (j = 0; j < referenceCount; ++j)
+      {
+         const uint8_t* record = nodeReferences(provider, node) +
+            (size_t)j * provider->referenceRecordSize;
+         const uint8_t* value;
+         uint32_t length;
+         if (!getString(
+                provider, readStringOffset(provider, record),
+                &value, &length) ||
+             !getString(
+                provider,
+                readStringOffset(
+                   provider, record + provider->stringOffsetWidth),
+                &value, &length) ||
+             record[2u * provider->stringOffsetWidth] > 1u)
+         {
+            *error = "packed reference record is invalid";
+            return 0;
+         }
+      }
+
+      for (j = 0; j < fieldCount; ++j)
+      {
+         const uint8_t* record = nodeFields(provider, node) +
+            (size_t)j * provider->fieldRecordSize;
+         const uint8_t* value;
+         const uint8_t* cursor;
+         uint32_t length;
+         uint32_t offset = readValueOffset(
+            provider, record + provider->stringOffsetWidth);
+         if (!getString(
+                provider, readStringOffset(provider, record),
+                &value, &length) || offset >= provider->valueSize)
+         {
+            *error = "packed field record is invalid";
+            return 0;
+         }
+         cursor = provider->data + provider->valueOffset + offset;
+         if (!skipValue(provider, &cursor, 0))
+         {
+            *error = "packed field value is invalid";
+            return 0;
+         }
+      }
    }
 
-   for (i = 0; i < provider->attributeCount; ++i)
+   if (expectedNodeBodyOffset != provider->nodeBodySize ||
+       validatedAttributeCount != provider->attributeCount ||
+       validatedReferenceCount != provider->referenceCount ||
+       validatedFieldCount != provider->fieldCount)
    {
-      const uint8_t* record = attributeRecord(provider, i);
-      uint32_t offset = readU32(record + 4);
-      const uint8_t* cursor;
-      if (offset < provider->valueOffset ||
-          offset >= provider->valueOffset + provider->valueSize)
-      {
-         *error = "packed attribute value offset is invalid";
-         return 0;
-      }
-      cursor = provider->data + offset;
-      if (!skipValue(provider, &cursor, 0))
-      {
-         *error = "packed attribute value is invalid";
-         return 0;
-      }
+      *error = "packed node body totals do not match the header";
+      return 0;
    }
 
-   for (i = 0; i < provider->referenceCount; ++i)
+   indexCapacity = provider->nodeIdOffsetWidth == 1u ? 0x100u :
+      (provider->nodeIdOffsetWidth == 2u ?
+       0x10000u : 0x100000000ULL);
+   if (nodeIdStringSize > indexCapacity ||
+       (provider->nodeIdOffsetWidth == 2u && nodeIdStringSize <= 0x100u) ||
+       (provider->nodeIdOffsetWidth == 4u &&
+        nodeIdStringSize <= 0x10000u))
    {
-      const uint8_t* record = referenceRecord(provider, i);
-      const uint8_t* value;
-      uint32_t length;
-      if (!getString(provider, readU32(record), &value, &length) ||
-          !getString(provider, readU32(record + 4), &value, &length) ||
-          record[8] > 1u)
-      {
-         *error = "packed reference record is invalid";
-         return 0;
-      }
+      *error = "packed NodeId offset width does not match NodeId strings";
+      return 0;
    }
 
    for (i = 0; i < provider->externalReferenceCount; ++i)
    {
       const uint8_t* external = externalReferenceRecord(provider, i);
-      uint32_t sourceIndex = readU32(external);
-      uint32_t referenceIndex = readU32(external + 4);
+      uint32_t sourceIndex = readIndex(external, provider->indexWidth);
+      uint32_t referenceIndex = readU16(external + provider->indexWidth);
       const uint8_t* source;
       const uint8_t* reference;
       const uint8_t* target;
       uint32_t targetLength;
       uint32_t targetIndex;
-      uint32_t referenceStart;
       uint16_t referenceCount;
 
-      if (sourceIndex >= provider->nodeCount ||
-          referenceIndex >= provider->referenceCount)
+      if (sourceIndex >= provider->nodeCount)
       {
          *error = "packed external reference index is invalid";
          return 0;
       }
 
-      source = nodeRecord(provider, sourceIndex);
-      referenceStart = readU32(source + 8);
-      referenceCount = readU16(source + 14);
-      if (referenceIndex < referenceStart ||
-          referenceIndex >= referenceStart + referenceCount)
+      source = indexedNodeBody(provider, sourceIndex);
+      referenceCount = nodeReferenceCount(source);
+      if (referenceIndex >= referenceCount)
       {
          *error = "packed external reference source is invalid";
          return 0;
       }
 
-      reference = referenceRecord(provider, referenceIndex);
+      reference = nodeReferences(provider, source) +
+         (size_t)referenceIndex * provider->referenceRecordSize;
       getString(
-         provider, readU32(reference + 4), &target, &targetLength);
+         provider,
+         readStringOffset(
+            provider, reference + provider->stringOffsetWidth),
+         &target, &targetLength);
       if (findNode(
             provider, (const char*)target, targetLength, &targetIndex))
       {
@@ -514,27 +832,6 @@ static int validateProvider(
       }
    }
 
-   for (i = 0; i < provider->fieldCount; ++i)
-   {
-      const uint8_t* record = fieldRecord(provider, i);
-      const uint8_t* value;
-      const uint8_t* cursor;
-      uint32_t length;
-      uint32_t offset = readU32(record + 4);
-      if (!getString(provider, readU32(record), &value, &length) ||
-          offset < provider->valueOffset ||
-          offset >= provider->valueOffset + provider->valueSize)
-      {
-         *error = "packed field record is invalid";
-         return 0;
-      }
-      cursor = provider->data + offset;
-      if (!skipValue(provider, &cursor, 0))
-      {
-         *error = "packed field value is invalid";
-         return 0;
-      }
-   }
    return 1;
 }
 
@@ -612,8 +909,9 @@ static int decodeValue(
       {
          const uint8_t* value;
          uint32_t length;
-         getString(provider, readU32(p), &value, &length);
-         p += 4;
+         getString(
+            provider, readStringOffset(provider, p), &value, &length);
+         p += provider->stringOffsetWidth;
          lua_pushlstring(L, (const char*)value, length);
          break;
       }
@@ -653,12 +951,12 @@ static int findNode(
    while (first < last)
    {
       uint32_t middle = first + (last - first) / 2;
-      const uint8_t* record = nodeRecord(provider, middle);
       const uint8_t* candidate;
       uint32_t candidateLength;
       int comparison;
       getString(
-         provider, readU32(record), &candidate, &candidateLength);
+         provider, nodeIdOffset(provider, middle),
+         &candidate, &candidateLength);
       comparison = compareBytes(
          (const uint8_t*)nodeId, nodeIdLength,
          candidate, candidateLength);
@@ -678,20 +976,21 @@ static int findNode(
 /* Find an attribute with binary search over one node's sorted attributes. */
 static int findAttribute(
    const PackedProvider* provider,
-   uint32_t nodeIndex,
-   uint16_t attributeId,
+   uint32_t nodeOffset,
+   uint8_t attributeId,
    const uint8_t** result)
 {
-   const uint8_t* node = nodeRecord(provider, nodeIndex);
-   uint32_t start = readU32(node + 4);
-   uint16_t count = readU16(node + 12);
+   const uint8_t* node = nodeBody(provider, nodeOffset);
+   const uint8_t* attributes = nodeAttributes(node);
+   uint8_t count = nodeAttributeCount(node);
    uint32_t first = 0;
    uint32_t last = count;
    while (first < last)
    {
       uint32_t middle = first + (last - first) / 2;
-      const uint8_t* record = attributeRecord(provider, start + middle);
-      uint16_t candidate = readU16(record);
+      const uint8_t* record = attributes +
+         (size_t)middle * provider->attributeRecordSize;
+      uint8_t candidate = record[0];
       if (candidate == attributeId)
       {
          *result = record;
@@ -732,14 +1031,15 @@ static int attributeNameToId(const char* name)
 static int pushAttribute(
    lua_State* L,
    const PackedProvider* provider,
-   uint32_t nodeIndex,
-   uint16_t attributeId)
+   uint32_t nodeOffset,
+   uint8_t attributeId)
 {
    const uint8_t* record;
    const uint8_t* cursor;
-   if (!findAttribute(provider, nodeIndex, attributeId, &record))
+   if (!findAttribute(provider, nodeOffset, attributeId, &record))
       return 0;
-   cursor = provider->data + readU32(record + 4);
+   cursor = provider->data + provider->valueOffset +
+      readValueOffset(provider, record + 1);
    decodeValue(L, provider, &cursor, 0);
    return 1;
 }
@@ -748,22 +1048,25 @@ static int pushAttribute(
 static int pushReference(
    lua_State* L,
    const PackedProvider* provider,
-   uint32_t index)
+   const uint8_t* record)
 {
-   const uint8_t* record = referenceRecord(provider, index);
    const uint8_t* value;
    uint32_t length;
    lua_createtable(L, 0, 3);
 
-   getString(provider, readU32(record), &value, &length);
+   getString(
+      provider, readStringOffset(provider, record), &value, &length);
    lua_pushlstring(L, (const char*)value, length);
    lua_setfield(L, -2, "type");
 
-   getString(provider, readU32(record + 4), &value, &length);
+   getString(
+      provider,
+      readStringOffset(provider, record + provider->stringOffsetWidth),
+      &value, &length);
    lua_pushlstring(L, (const char*)value, length);
    lua_setfield(L, -2, "target");
 
-   lua_pushboolean(L, record[8] != 0);
+   lua_pushboolean(L, record[2u * provider->stringOffsetWidth] != 0);
    lua_setfield(L, -2, "isForward");
    return 1;
 }
@@ -772,13 +1075,13 @@ static int pushReference(
 static int pushView(
    lua_State* L,
    PackedProvider* provider,
-   uint32_t nodeIndex,
+   uint32_t nodeOffset,
    const char* metatable,
    int ownerIndex)
 {
    PackedView* view = (PackedView*)lua_newuserdata(L, sizeof(PackedView));
    view->provider = provider;
-   view->nodeIndex = nodeIndex;
+   view->nodeOffset = nodeOffset;
    luaL_setmetatable(L, metatable);
    retainOwner(L, ownerIndex, -1);
    return 1;
@@ -791,7 +1094,9 @@ static int pushNode(
    uint32_t nodeIndex,
    int ownerIndex)
 {
-   return pushView(L, provider, nodeIndex, NODE_MT, ownerIndex);
+   return pushView(
+      L, provider, indexedNodeBodyOffset(provider, nodeIndex),
+      NODE_MT, ownerIndex);
 }
 
 /* Implement provider:getNode(NodeId). */
@@ -823,7 +1128,7 @@ static int providerGetTypeInfo(lua_State* L)
       return 1;
    }
    view.provider = provider;
-   view.nodeIndex = index;
+   view.nodeOffset = indexedNodeBodyOffset(provider, index);
    if (!findTypeInfoNode(L, &view, &index))
    {
       lua_pushnil(L);
@@ -839,7 +1144,6 @@ static int providerNodesIterator(lua_State* L)
       checkProvider(L, lua_upvalueindex(1));
    uint32_t* position =
       (uint32_t*)lua_touserdata(L, lua_upvalueindex(2));
-   const uint8_t* record;
    const uint8_t* nodeId;
    uint32_t nodeIdLength;
    uint32_t index;
@@ -847,8 +1151,9 @@ static int providerNodesIterator(lua_State* L)
    if (*position >= provider->nodeCount)
       return 0;
    index = (*position)++;
-   record = nodeRecord(provider, index);
-   getString(provider, readU32(record), &nodeId, &nodeIdLength);
+   getString(
+      provider, nodeIdOffset(provider, index),
+      &nodeId, &nodeIdLength);
    lua_pushlstring(L, (const char*)nodeId, nodeIdLength);
    pushNode(L, provider, index, lua_upvalueindex(1));
    return 2;
@@ -871,7 +1176,7 @@ static int providerIterateNodes(lua_State* L)
 static int providerStats(lua_State* L)
 {
    PackedProvider* provider = checkProvider(L, 1);
-   lua_createtable(L, 0, 7);
+   lua_createtable(L, 0, 14);
 #define SET_STAT(field, value) \
    lua_pushinteger(L, (lua_Integer)(value)); \
    lua_setfield(L, -2, (field))
@@ -882,6 +1187,13 @@ static int providerStats(lua_State* L)
    SET_STAT("ExternalReferenceCount", provider->externalReferenceCount);
    SET_STAT("FieldCount", provider->fieldCount);
    SET_STAT("StringPoolSize", provider->stringSize);
+   SET_STAT("NodeBodySize", provider->nodeBodySize);
+   SET_STAT("IndexWidth", provider->indexWidth);
+   SET_STAT("NodeIdOffsetWidth", provider->nodeIdOffsetWidth);
+   SET_STAT("NodeBodyOffsetWidth", provider->nodeBodyOffsetWidth);
+   SET_STAT("StringOffsetWidth", provider->stringOffsetWidth);
+   SET_STAT("ValueOffsetWidth", provider->valueOffsetWidth);
+   SET_STAT("StringLengthWidth", provider->stringLengthWidth);
 #undef SET_STAT
    return 1;
 }
@@ -897,15 +1209,24 @@ static int providerExternalReferencesIterator(lua_State* L)
    const uint8_t* source;
    const uint8_t* sourceId;
    uint32_t sourceIdLength;
+   uint32_t sourceIndex;
+   uint32_t referenceIndex;
 
    if (*position >= provider->externalReferenceCount)
       return 0;
 
    external = externalReferenceRecord(provider, (*position)++);
-   source = nodeRecord(provider, readU32(external));
-   getString(provider, readU32(source), &sourceId, &sourceIdLength);
+   sourceIndex = readIndex(external, provider->indexWidth);
+   referenceIndex = readU16(external + provider->indexWidth);
+   source = indexedNodeBody(provider, sourceIndex);
+   getString(
+      provider, nodeIdOffset(provider, sourceIndex),
+      &sourceId, &sourceIdLength);
    lua_pushlstring(L, (const char*)sourceId, sourceIdLength);
-   pushReference(L, provider, readU32(external + 4));
+   pushReference(
+      L, provider,
+      nodeReferences(provider, source) +
+         (size_t)referenceIndex * provider->referenceRecordSize);
    return 2;
 }
 
@@ -956,9 +1277,9 @@ static int attrsIndex(lua_State* L)
       attributeId = (int)luaL_checkinteger(L, 2);
    else
       attributeId = attributeNameToId(luaL_checkstring(L, 2));
-   if (attributeId <= 0 || attributeId > UINT16_MAX ||
+   if (attributeId <= 0 || attributeId > UINT8_MAX ||
        !pushAttribute(
-          L, view->provider, view->nodeIndex, (uint16_t)attributeId))
+          L, view->provider, view->nodeOffset, (uint8_t)attributeId))
       lua_pushnil(L);
    return 1;
 }
@@ -969,17 +1290,18 @@ static int attrsIterator(lua_State* L)
    PackedView* view = checkView(L, lua_upvalueindex(1), ATTRS_MT);
    uint32_t* position =
       (uint32_t*)lua_touserdata(L, lua_upvalueindex(2));
-   const uint8_t* node = nodeRecord(view->provider, view->nodeIndex);
-   uint32_t start = readU32(node + 4);
-   uint16_t count = readU16(node + 12);
+   const uint8_t* node = nodeBody(view->provider, view->nodeOffset);
+   uint8_t count = nodeAttributeCount(node);
    const uint8_t* record;
    const uint8_t* cursor;
 
    if (*position >= count)
       return 0;
-   record = attributeRecord(view->provider, start + (*position)++);
-   lua_pushinteger(L, readU16(record));
-   cursor = view->provider->data + readU32(record + 4);
+   record = nodeAttributes(node) +
+      (size_t)(*position)++ * view->provider->attributeRecordSize;
+   lua_pushinteger(L, record[0]);
+   cursor = view->provider->data + view->provider->valueOffset +
+      readValueOffset(view->provider, record + 1);
    decodeValue(L, view->provider, &cursor, 0);
    return 2;
 }
@@ -1001,8 +1323,8 @@ static int attrsPairs(lua_State* L)
 static int refsLength(lua_State* L)
 {
    PackedView* view = checkView(L, 1, REFS_MT);
-   const uint8_t* node = nodeRecord(view->provider, view->nodeIndex);
-   lua_pushinteger(L, readU16(node + 14));
+   const uint8_t* node = nodeBody(view->provider, view->nodeOffset);
+   lua_pushinteger(L, nodeReferenceCount(node));
    return 1;
 }
 
@@ -1011,16 +1333,17 @@ static int refsIndex(lua_State* L)
 {
    PackedView* view = checkView(L, 1, REFS_MT);
    lua_Integer requested = luaL_checkinteger(L, 2);
-   const uint8_t* node = nodeRecord(view->provider, view->nodeIndex);
-   uint32_t start = readU32(node + 8);
-   uint16_t count = readU16(node + 14);
+   const uint8_t* node = nodeBody(view->provider, view->nodeOffset);
+   uint16_t count = nodeReferenceCount(node);
    if (requested < 1 || (uint64_t)requested > count)
    {
       lua_pushnil(L);
       return 1;
    }
    return pushReference(
-      L, view->provider, start + (uint32_t)requested - 1u);
+      L, view->provider,
+      nodeReferences(view->provider, node) +
+         ((size_t)requested - 1u) * view->provider->referenceRecordSize);
 }
 
 /* Yield the next one-based reference index and materialized reference. */
@@ -1029,13 +1352,15 @@ static int refsIterator(lua_State* L)
    PackedView* view = checkView(L, lua_upvalueindex(1), REFS_MT);
    uint32_t* position =
       (uint32_t*)lua_touserdata(L, lua_upvalueindex(2));
-   const uint8_t* node = nodeRecord(view->provider, view->nodeIndex);
-   uint32_t start = readU32(node + 8);
-   uint16_t count = readU16(node + 14);
+   const uint8_t* node = nodeBody(view->provider, view->nodeOffset);
+   uint16_t count = nodeReferenceCount(node);
    if (*position >= count)
       return 0;
    lua_pushinteger(L, (lua_Integer)*position + 1);
-   pushReference(L, view->provider, start + (*position)++);
+   pushReference(
+      L, view->provider,
+      nodeReferences(view->provider, node) +
+         (size_t)(*position)++ * view->provider->referenceRecordSize);
    return 2;
 }
 
@@ -1061,7 +1386,7 @@ static int nodeGetAttribute(lua_State* L)
       attributeId = (int)luaL_checkinteger(L, 2);
    else
       attributeId = attributeNameToId(luaL_checkstring(L, 2));
-   if (attributeId <= 0 || attributeId > UINT16_MAX)
+   if (attributeId <= 0 || attributeId > UINT8_MAX)
    {
       lua_pushboolean(L, 0);
       lua_pushnil(L);
@@ -1069,7 +1394,7 @@ static int nodeGetAttribute(lua_State* L)
    }
    lua_pushboolean(L, 1);
    if (!pushAttribute(
-          L, view->provider, view->nodeIndex, (uint16_t)attributeId))
+          L, view->provider, view->nodeOffset, (uint8_t)attributeId))
    {
       lua_pop(L, 1);
       lua_pushboolean(L, 0);
@@ -1082,7 +1407,7 @@ static int nodeGetAttribute(lua_State* L)
 static int nodeIterateAttributes(lua_State* L)
 {
    PackedView* view = checkView(L, 1, NODE_MT);
-   pushView(L, view->provider, view->nodeIndex, ATTRS_MT, 1);
+   pushView(L, view->provider, view->nodeOffset, ATTRS_MT, 1);
    lua_replace(L, 1);
    lua_settop(L, 1);
    return attrsPairs(L);
@@ -1092,7 +1417,7 @@ static int nodeIterateAttributes(lua_State* L)
 static int nodeIterateReferences(lua_State* L)
 {
    PackedView* view = checkView(L, 1, NODE_MT);
-   pushView(L, view->provider, view->nodeIndex, REFS_MT, 1);
+   pushView(L, view->provider, view->nodeOffset, REFS_MT, 1);
    lua_replace(L, 1);
    lua_settop(L, 1);
    return refsPairs(L);
@@ -1107,22 +1432,26 @@ static int nodeGetReference(lua_State* L)
    const char* type = luaL_checklstring(L, 2, &typeLength);
    const char* target = luaL_checklstring(L, 3, &targetLength);
    int isForward = lua_toboolean(L, 4);
-   const uint8_t* node = nodeRecord(view->provider, view->nodeIndex);
-   uint32_t start = readU32(node + 8);
-   uint16_t count = readU16(node + 14);
+   const uint8_t* node = nodeBody(view->provider, view->nodeOffset);
+   const uint8_t* references = nodeReferences(view->provider, node);
+   uint16_t count = nodeReferenceCount(node);
    uint16_t i;
    for (i = 0; i < count; ++i)
    {
-      const uint8_t* record = referenceRecord(view->provider, start + i);
+      const uint8_t* record = references +
+         (size_t)i * view->provider->referenceRecordSize;
       const uint8_t* candidateType;
       const uint8_t* candidateTarget;
       uint32_t candidateTypeLength;
       uint32_t candidateTargetLength;
       getString(
-         view->provider, readU32(record),
+         view->provider, readStringOffset(view->provider, record),
          &candidateType, &candidateTypeLength);
       getString(
-         view->provider, readU32(record + 4),
+         view->provider,
+         readStringOffset(
+            view->provider,
+            record + view->provider->stringOffsetWidth),
          &candidateTarget, &candidateTargetLength);
       if (compareBytes(
              (const uint8_t*)type, typeLength,
@@ -1130,10 +1459,10 @@ static int nodeGetReference(lua_State* L)
           compareBytes(
              (const uint8_t*)target, targetLength,
              candidateTarget, candidateTargetLength) == 0 &&
-          (record[8] != 0) == isForward)
+          (record[2u * view->provider->stringOffsetWidth] != 0) == isForward)
       {
          lua_pushboolean(L, 1);
-         pushReference(L, view->provider, start + i);
+         pushReference(L, view->provider, record);
          return 2;
       }
    }
@@ -1149,17 +1478,19 @@ static int findField(
    size_t keyLength,
    const uint8_t** result)
 {
-   const uint8_t* node = nodeRecord(view->provider, view->nodeIndex);
-   uint32_t start = readU32(node + 16);
-   uint16_t count = readU16(node + 20);
+   const uint8_t* node = nodeBody(view->provider, view->nodeOffset);
+   const uint8_t* fields = nodeFields(view->provider, node);
+   uint8_t count = nodeFieldCount(node);
    uint16_t i;
    for (i = 0; i < count; ++i)
    {
-      const uint8_t* record = fieldRecord(view->provider, start + i);
+      const uint8_t* record = fields +
+         (size_t)i * view->provider->fieldRecordSize;
       const uint8_t* candidate;
       uint32_t candidateLength;
       getString(
-         view->provider, readU32(record), &candidate, &candidateLength);
+         view->provider, readStringOffset(view->provider, record),
+         &candidate, &candidateLength);
       if (compareBytes(
              (const uint8_t*)key, keyLength,
              candidate, candidateLength) == 0)
@@ -1178,7 +1509,9 @@ static int pushField(lua_State* L, const PackedView* view, const char* key)
    const uint8_t* cursor;
    if (!findField(view, key, strlen(key), &record))
       return 0;
-   cursor = view->provider->data + readU32(record + 4);
+   cursor = view->provider->data + view->provider->valueOffset +
+      readValueOffset(
+         view->provider, record + view->provider->stringOffsetWidth);
    decodeValue(L, view->provider, &cursor, 0);
    return 1;
 }
@@ -1209,7 +1542,7 @@ static int findTypeInfoNode(
 static int nodeGetDefinition(lua_State* L)
 {
    PackedView* view = checkView(L, 1, NODE_MT);
-   if (!pushAttribute(L, view->provider, view->nodeIndex, 23u))
+   if (!pushAttribute(L, view->provider, view->nodeOffset, 23u))
       lua_pushnil(L);
    return 1;
 }
@@ -1235,7 +1568,7 @@ static int nodeIterateFields(lua_State* L)
 {
    PackedView* view = checkView(L, 1, NODE_MT);
    size_t count;
-   if (!pushAttribute(L, view->provider, view->nodeIndex, 23u))
+   if (!pushAttribute(L, view->provider, view->nodeOffset, 23u))
    {
       lua_pushnil(L);
       lua_pushinteger(L, 0);
@@ -1283,7 +1616,7 @@ static int nodeGetDataTypeNodeId(lua_State* L)
 {
    PackedView* view = checkView(L, 1, NODE_MT);
    if (!pushField(L, view, "DataTypeId") &&
-       !pushAttribute(L, view->provider, view->nodeIndex, 1u))
+       !pushAttribute(L, view->provider, view->nodeOffset, 1u))
       lua_pushnil(L);
    return 1;
 }
@@ -1314,9 +1647,9 @@ static int nodeIndex(lua_State* L)
    const char* key = luaL_checklstring(L, 2, &keyLength);
 
    if (strcmp(key, "Attrs") == 0)
-      return pushView(L, view->provider, view->nodeIndex, ATTRS_MT, 1);
+      return pushView(L, view->provider, view->nodeOffset, ATTRS_MT, 1);
    if (strcmp(key, "Refs") == 0)
-      return pushView(L, view->provider, view->nodeIndex, REFS_MT, 1);
+      return pushView(L, view->provider, view->nodeOffset, REFS_MT, 1);
    if (strcmp(key, "getAttribute") == 0)
       lua_pushcfunction(L, nodeGetAttribute);
    else if (strcmp(key, "iterateAttributes") == 0)
@@ -1346,7 +1679,9 @@ static int nodeIndex(lua_State* L)
          lua_pushnil(L);
          return 1;
       }
-      cursor = view->provider->data + readU32(record + 4);
+      cursor = view->provider->data + view->provider->valueOffset +
+         readValueOffset(
+            view->provider, record + view->provider->stringOffsetWidth);
       decodeValue(L, view->provider, &cursor, 0);
    }
    return 1;
@@ -1358,16 +1693,16 @@ static int nodePairsIterator(lua_State* L)
    PackedView* view = checkView(L, lua_upvalueindex(1), NODE_MT);
    uint32_t* position =
       (uint32_t*)lua_touserdata(L, lua_upvalueindex(2));
-   const uint8_t* node = nodeRecord(view->provider, view->nodeIndex);
-   uint32_t start = readU32(node + 16);
-   uint16_t count = readU16(node + 20);
+   const uint8_t* node = nodeBody(view->provider, view->nodeOffset);
+   const uint8_t* fields = nodeFields(view->provider, node);
+   uint8_t count = nodeFieldCount(node);
 
    if (*position == 0)
    {
       ++(*position);
       lua_pushliteral(L, "Attrs");
       pushView(
-         L, view->provider, view->nodeIndex,
+         L, view->provider, view->nodeOffset,
          ATTRS_MT, lua_upvalueindex(1));
       return 2;
    }
@@ -1376,22 +1711,25 @@ static int nodePairsIterator(lua_State* L)
       ++(*position);
       lua_pushliteral(L, "Refs");
       pushView(
-         L, view->provider, view->nodeIndex,
+         L, view->provider, view->nodeOffset,
          REFS_MT, lua_upvalueindex(1));
       return 2;
    }
    if (*position - 2u < count)
    {
-      const uint8_t* record =
-         fieldRecord(view->provider, start + *position - 2u);
+      const uint8_t* record = fields +
+         (size_t)(*position - 2u) * view->provider->fieldRecordSize;
       const uint8_t* key;
       const uint8_t* cursor;
       uint32_t keyLength;
       ++(*position);
       getString(
-         view->provider, readU32(record), &key, &keyLength);
+         view->provider, readStringOffset(view->provider, record),
+         &key, &keyLength);
       lua_pushlstring(L, (const char*)key, keyLength);
-      cursor = view->provider->data + readU32(record + 4);
+      cursor = view->provider->data + view->provider->valueOffset +
+         readValueOffset(
+            view->provider, record + view->provider->stringOffsetWidth);
       decodeValue(L, view->provider, &cursor, 0);
       return 2;
    }
