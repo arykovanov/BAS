@@ -321,10 +321,10 @@ $(ODIR)/%.o : %.c
 # A profile or mode switch must also replace the packaged Lua sources.
 mako.zip: _force_opcua_sources
 ifeq ($(WINDOWS),1)
-	cmd /c "set OPCUA_ROOT=$(if $(filter 2,$(BA_ENABLE_LUA_OPCUA)),$(OPCUA_ROOT))&&cd /d $(subst /,\,$(BASRESDIR))\build && echo n|mako.cmd"
+	+cmd /c "set OPCUA_ROOT=$(if $(filter 2,$(BA_ENABLE_LUA_OPCUA)),$(OPCUA_ROOT))&&cd /d $(subst /,\,$(BASRESDIR))\build && echo n|mako.cmd"
 	cmd /c "copy /Y $(subst /,\,$(BASRESDIR))\build\mako.zip ."
 else
-	cd $(BASRESDIR)/build&&OPCUA_ROOT='$(if $(filter 2,$(BA_ENABLE_LUA_OPCUA)),$(OPCUA_ROOT))' ./mako.sh
+	+cd $(BASRESDIR)/build&&OPCUA_ROOT='$(if $(filter 2,$(BA_ENABLE_LUA_OPCUA)),$(OPCUA_ROOT))' ./mako.sh
 	cp $(BASRESDIR)/build/mako.zip .
 endif
 
