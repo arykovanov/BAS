@@ -61562,7 +61562,7 @@ HttpRequest_getHeaders(HttpRequest* o, int* len)
 
 
 BA_API int
-HttpRequest_wsUpgrade(HttpRequest* o)
+HttpRequest_wsUpgrade2(HttpRequest* o, const char* protocol)
 {
    static const U8 sysdatamcheck[]={"\062\065\070\105\101\106\101\065\055\105\071\061\064\055\064\067\104\101\055\071\065\103\101\055\103\065\101\102\060\104\103\070\065\102\061\061"};
    DynBuffer db;
@@ -61646,6 +61646,8 @@ HttpRequest_wsUpgrade(HttpRequest* o)
    HttpResponse_setStatus(r3000write, 101);
    HttpResponse_setHeader(r3000write,"\125\160\147\162\141\144\145","\167\145\142\163\157\143\153\145\164",TRUE);
    HttpResponse_setHeader(r3000write,"\103\157\156\156\145\143\164\151\157\156","\125\160\147\162\141\144\145",TRUE);
+   if(protocol && *protocol)
+      HttpResponse_setHeader(r3000write,"Sec-WebSocket-Protocol",protocol,TRUE);
    DynBuffer_constructor(&db,20*4/3+10,100,0,0);
    BufPrint_b64Encode((BufPrint*)&db, secondaryentry, 20);
    handlersetup=-3;
@@ -61665,6 +61667,13 @@ HttpRequest_wsUpgrade(HttpRequest* o)
       HttpResponse_setHeader(r3000write,"\123\145\143\055\127\145\142\123\157\143\153\145\164\055\126\145\162\163\151\157\156","\061\063",TRUE);
    HttpResponse_sendError1(r3000write,error);
    return -4; 
+}
+
+
+BA_API int
+HttpRequest_wsUpgrade(HttpRequest* o)
+{
+   return HttpRequest_wsUpgrade2(o, 0);
 }
 
 
@@ -127273,12 +127282,22 @@ switcherremoved(lua_State* L)
    SoDispCon* con = (SoDispCon*)HttpRequest_getConnection(&cmd->request);
    HttpInData* registeredevent = HttpRequest_getBuffer(&cmd->request);
    S32 icachealiases = HttpInData_getBufSize(registeredevent);
-   int sffsdrnandflash = domainnotifier(L,2,FALSE) ? -1 :
-      HttpRequest_wsUpgrade(&cmd->request);
+   BaBool noUpgrade=FALSE;
+   const char* protocol=0;
+   int argType=lua_type(L,2);
+   int sffsdrnandflash;
+   if(argType == LUA_TBOOLEAN)
+      noUpgrade=balua_checkboolean(L,2);
+   else if(argType == LUA_TSTRING)
+      protocol=lua_tostring(L,2);
+   else if(argType != LUA_TNONE && argType != LUA_TNIL)
+      luaL_argerror(L,2,"expected boolean or WebSocket subprotocol");
+   sffsdrnandflash = noUpgrade ? -1 :
+      HttpRequest_wsUpgrade2(&cmd->request,protocol);
    if(sffsdrnandflash < -1)
       return reportpanic(L,"\167\163\165\160\147\162\141\144\145");
    if(sffsdrnandflash)
-   { 
+   {
       if( ! SoDispCon_isValid(con) )
          return enterirqoff(L, E_SOCKET_CLOSED);
       moveSockCon(L,con,LSockT_Server);
@@ -127307,7 +127326,7 @@ switcherremoved(lua_State* L)
          wss->overflowLen=icachealiases;
       }
    }
-   return 1; 
+   return 1;
 }
 
 

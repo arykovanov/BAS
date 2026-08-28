@@ -130,7 +130,6 @@ else
 
 ifeq ($(USE_OPCUA),1)
 CFLAGS += -DUSE_OPCUA=1
-SOURCE += opcua_packed.c opcua_ns0.c
 
 opcua:
 	@echo "Use embedded OPCUA"
